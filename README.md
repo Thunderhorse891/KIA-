@@ -1,77 +1,107 @@
-# Kia Lead Generator Bot (Compliant)
+# Referral Finder's-Fee Tracker (Partner Customer Tracking)
 
-## What this does
-This bot gives you a referral pipeline focused on Kia only:
+**Source-of-truth product framing:**
+> This bot tracks referral customers I send to my friend, records when they become his customer, and tracks whether I received my finder’s fee.
 
-1. Capture leads with source + attribution code.
-2. Route prospects to Kia (email + website).
-3. Mark who bought (sold) and track paid finder-fee invoices.
-4. Send **daily lead summaries to Kia**.
+## What this bot tracks
+This is **not** your personal sales CRM.
+This is a **referral / finder’s-fee tracker** for prospects you send to your friend (partner).
 
-## Important reality check
-- Without social media API keys, the bot cannot safely auto-post on your behalf across platforms.
-- It supports compliant lead tracking and email workflows.
-- You can still gather leads from public sources and import them in bulk via CSV.
+Workflow:
+1. You refer a prospect to your friend.
+2. Bot stores source + referral code.
+3. Your friend confirms whether they became his customer.
+4. Bot records partner-closed event.
+5. Bot tracks expected finder’s fee and whether paid/unpaid.
+6. Bot sends weekly referral summaries to you.
 
-## Core commands
+## Default business assumptions in this repo
+- Channels: Facebook groups, Reddit, referrals, web form, warm DMs.
+- Data entry: Erin only (for now).
+- `mark-partner-closed` timing: when friend confirms they became his customer.
+- `mark-finders-fee-paid` timing: when your finder’s fee is actually received.
+- Payment methods: Zelle, Cash App, PayPal.
+- Invoice terms: Net 7.
+- Follow-up schedule:
+  - Day 1 invoice
+  - Day 7 reminder
+  - Day 14 reminder
+  - Day 21 final reminder
+- Runtime now: laptop.
+- Future runtime: VPS/server.
 
-### Add one lead
+## Outlook SMTP configuration (recommended)
+Use Outlook SMTP values:
+
 ```bash
-python3 lead_bot.py add \
-  --source "reddit:personalfinance" \
+export SMTP_HOST="smtp.office365.com"
+export SMTP_PORT="587"
+export SMTP_USER="Erin067841@outlook.com"
+export SMTP_PASS="OUTLOOK_APP_PASSWORD"
+export SMTP_FROM="Erin067841@outlook.com"
+export LEADBOT_REPORT_TO="Erin067841@outlook.com"
+```
+
+**Important:** `SMTP_PASS` must be an Outlook **app password**, not your normal Outlook login password.
+
+## CLI commands
+
+### 1) Add a referred prospect
+```bash
+python3 lead_bot.py add-referral \
+  --source "facebook:group:atlanta-finance" \
   --name "Prospect Name" \
   --email "prospect@example.com" \
   --question "Need life insurance options" \
   --tags "term-life" \
-  --owner "YOURNAME" \
-  --notify-kia
+  --owner "ERIN" \
+  --notify-partner
 ```
 
-### Bulk import leads from CSV
+### 2) Bulk import referred prospects
 CSV columns required: `source,name,email,question,tags`
 
 ```bash
-python3 lead_bot.py bulk-import --csv-file leads.csv --owner YOURNAME
+python3 lead_bot.py bulk-import --csv-file referrals.csv --owner ERIN
 ```
 
-### Mark sale (who bought Kia package)
+### 3) Mark customer closed by partner
 ```bash
-python3 lead_bot.py mark-sold --ref-code YOURNAME-LEAD-000001 --sale-amount 1200 --invoice-amount 50
+python3 lead_bot.py mark-partner-closed \
+  --ref-code ERIN-REF-000001 \
+  --sale-amount 1200 \
+  --finders-fee-amount 50 \
+  --send-invoice
 ```
 
-### Mark your finder-fee paid
+### 4) Mark finder’s fee paid
 ```bash
-python3 lead_bot.py mark-paid --ref-code YOURNAME-LEAD-000001 --paid-amount 50
+python3 lead_bot.py mark-finders-fee-paid --ref-code ERIN-REF-000001 --paid-amount 50
 ```
 
-### Send daily summary to Kia
+### 5) Run weekly referral summary
 ```bash
-python3 lead_bot.py daily-summary --email
+python3 lead_bot.py weekly-summary --days 7
 ```
 
-### Send weekly summary to Kia
+### 6) Email weekly referral summary to yourself
 ```bash
-python3 lead_bot.py weekly-summary --email
+python3 lead_bot.py weekly-summary --days 7 --email --to Erin067841@outlook.com
 ```
 
-## Fully automated daily email to Kia
-1) Set SMTP env vars:
+## Fully automated weekly summary to yourself
+Run every Monday at 8:00 AM:
+
 ```bash
-export SMTP_HOST="smtp.yourprovider.com"
-export SMTP_PORT="587"
-export SMTP_USER="your-sender@example.com"
-export SMTP_PASS="YOUR_APP_PASSWORD"
-export SMTP_FROM="your-sender@example.com"
+0 8 * * 1 cd /workspace/KIA- && /usr/bin/python3 lead_bot.py --db leadbot.db weekly-summary --days 7 --email --to Erin067841@outlook.com
 ```
 
-2) Add cron (every day at 8:00 AM):
-```bash
-0 8 * * * cd /workspace/KIA- && /usr/bin/python3 lead_bot.py --db leadbot.db daily-summary --email
-```
+## Backward compatibility
+Legacy commands still work (`add`, `mark-sold`, `mark-paid`) but are now labeled as legacy aliases.
 
-## Contacts used by bot
-- Kia Email: `KIACONWELL@PRIMERICA.COM`
-- Kia Website: `https://livemore.net/o/kia_conwell`
+## Partner contact destination
+- Partner Email: `KIACONWELL@PRIMERICA.COM`
+- Partner Website: `https://livemore.net/o/kia_conwell`
 
 ## Compliance note
-Use only platform-approved, opt-in outreach. This tool does not perform blind spam posting.
+Use only platform-approved outreach and opt-in referrals. This tool does not perform blind spam posting.
