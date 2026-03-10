@@ -32,25 +32,27 @@ class LeadBotTests(unittest.TestCase):
         self.assertEqual(sold["status"], "sold")
         self.assertIn("$50.00", invoice_text(sold))
 
-    def test_mark_paid_and_weekly_summary(self):
+    def test_mark_paid_and_summary(self):
         lead_id = self.bot.add_lead(Lead("web", "Nia", "nia@example.com", "Savings", "invest"))
         lead = self.bot.get_lead(lead_id)
         self.bot.mark_sale(lead["ref_code"], 2000.0)
         self.assertTrue(self.bot.mark_paid(lead["ref_code"], 50.0))
         paid = self.bot.get_lead(lead_id)
         self.assertEqual(paid["status"], "paid")
-        summary = self.bot.weekly_summary(days=7)
+        summary = self.bot.summary(days=7)
         self.assertIn("Referral invoices paid", summary)
 
-    def test_weekly_summary_parser_accepts_to_email(self):
+    def test_daily_summary_parser(self):
         parser = build_parser()
-        args = parser.parse_args(["weekly-summary", "--days", "7", "--email", "--to", "me@example.com"])
-        self.assertEqual(args.to, "me@example.com")
+        args = parser.parse_args(["daily-summary", "--email"])
+        self.assertEqual(args.days, 1)
+        self.assertTrue(args.email)
 
-    def test_weekly_summary_default_to_user_email(self):
+    def test_weekly_summary_parser(self):
         parser = build_parser()
-        args = parser.parse_args(["weekly-summary", "--days", "7", "--email"])
-        self.assertEqual(args.to, "Erin067841@outlook.com")
+        args = parser.parse_args(["weekly-summary", "--email"])
+        self.assertEqual(args.days, 7)
+        self.assertTrue(args.email)
 
 
 if __name__ == "__main__":

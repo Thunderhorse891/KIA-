@@ -6,12 +6,13 @@ Compliant workflow:
 - Generate attribution ref codes.
 - Notify Kia on new leads (optional SMTP).
 - Track sold leads, invoice events, and referral payments.
-- Send weekly lead summary emails.
+- Send daily lead summary emails to Kia.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import os
 import re
@@ -26,7 +27,6 @@ DB_PATH = os.getenv("LEADBOT_DB", "leadbot.db")
 KIA_EMAIL = "KIACONWELL@PRIMERICA.COM"
 KIA_WEBSITE = "https://livemore.net/o/kia_conwell"
 DEFAULT_REF_OWNER = os.getenv("LEADBOT_REF_OWNER", "REF_PARTNER")
-DEFAULT_REPORT_TO = os.getenv("LEADBOT_REPORT_TO", "Erin067841@outlook.com")
 
 PRIMERICA_CONTEXT = textwrap.dedent(
     """
@@ -151,7 +151,7 @@ class LeadBot:
             )
             return cur.rowcount > 0
 
-    def weekly_summary(self, days: int = 7) -> str:
+    def summary(self, days: int = 1) -> str:
         since = (dt.datetime.utcnow() - dt.timedelta(days=days)).isoformat()
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -164,15 +164,14 @@ class LeadBot:
             paid = sum(1 for r in leads if r["invoice_paid"] == 1)
             unpaid = sold - paid
 
-            rows = []
-            for r in leads:
-                rows.append(
-                    f"- {r['ref_code']} | {r['name']} | {r['email']} | status={r['status']} | paid={bool(r['invoice_paid'])}"
-                )
+            rows = [
+                f"- {r['ref_code']} | {r['name']} | {r['email']} | status={r['status']} | paid={bool(r['invoice_paid'])}"
+                for r in leads
+            ]
 
         return textwrap.dedent(
             f"""
-            Weekly Lead Summary (last {days} days)
+            Lead Summary (last {days} day{'s' if days != 1 else ''})
             Generated: {dt.datetime.utcnow().isoformat()} UTC
 
             Total new leads: {total}
@@ -249,9 +248,7 @@ def send_email(to_email: str, subject: str, body: str) -> None:
 
 def cmd_add(args: argparse.Namespace) -> None:
     bot = LeadBot(args.db)
-    lead_id = bot.add_lead(
-        Lead(args.source, args.name, args.email, args.question, args.tags), owner=args.owner
-    )
+    lead_id = bot.add_lead(Lead(args.source, args.name, args.email, args.question, args.tags), owner=args.owner)
     lead = bot.get_lead(lead_id)
     print(f"Created lead #{lead_id} with ref code {lead['ref_code']}")
     print("\n--- Suggested outreach reply ---")
@@ -262,6 +259,24 @@ def cmd_add(args: argparse.Namespace) -> None:
             f"New Lead: {lead['name']} ({lead['ref_code']})",
             f"New lead captured from {lead['source']}\nWebsite: {KIA_WEBSITE}\n\n{draft_reply(lead)}",
         )
+
+
+def cmd_bulk_import(args: argparse.Namespace) -> None:
+    bot = LeadBot(args.db)
+    created = 0
+    with open(args.csv_file, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        required = {"source", "name", "email", "question", "tags"}
+        if not required.issubset(set(reader.fieldnames or [])):
+            missing = required - set(reader.fieldnames or [])
+            raise SystemExit(f"CSV missing columns: {', '.join(sorted(missing))}")
+        for row in reader:
+            bot.add_lead(
+                Lead(row["source"], row["name"], row["email"], row["question"], row.get("tags", "")),
+                owner=args.owner,
+            )
+            created += 1
+    print(f"Imported {created} leads from {args.csv_file}")
 
 
 def cmd_mark_sold(args: argparse.Namespace) -> None:
@@ -282,13 +297,13 @@ def cmd_mark_paid(args: argparse.Namespace) -> None:
     print(f"Marked {args.ref_code} as PAID (${args.paid_amount:.2f}).")
 
 
-def cmd_weekly_summary(args: argparse.Namespace) -> None:
+def cmd_summary(args: argparse.Namespace) -> None:
     bot = LeadBot(args.db)
-    report = bot.weekly_summary(days=args.days)
+    report = bot.summary(days=args.days)
     print(report)
     if args.email:
-        send_email(args.to, f"Weekly Leads Summary ({args.days} days)", report)
-        print(f"Weekly summary email sent to {args.to}.")
+        send_email(KIA_EMAIL, f"Lead Summary ({args.days} day window)", report)
+        print(f"Summary email sent to {KIA_EMAIL}.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -306,6 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--notify-kia", action="store_true")
     add.set_defaults(func=cmd_add)
 
+    bulk = sub.add_parser("bulk-import", help="Import leads from CSV")
+    bulk.add_argument("--csv-file", required=True)
+    bulk.add_argument("--owner", default=DEFAULT_REF_OWNER)
+    bulk.set_defaults(func=cmd_bulk_import)
+
     sold = sub.add_parser("mark-sold", help="Mark a lead sold + invoice")
     sold.add_argument("--ref-code", required=True)
     sold.add_argument("--sale-amount", type=float, required=True)
@@ -318,15 +338,15 @@ def build_parser() -> argparse.ArgumentParser:
     paid.add_argument("--paid-amount", type=float, default=50.0)
     paid.set_defaults(func=cmd_mark_paid)
 
-    weekly = sub.add_parser("weekly-summary", help="Generate weekly summary")
+    daily = sub.add_parser("daily-summary", help="Generate/send daily summary to Kia")
+    daily.add_argument("--days", type=int, default=1)
+    daily.add_argument("--email", action="store_true", help="Email summary to Kia")
+    daily.set_defaults(func=cmd_summary)
+
+    weekly = sub.add_parser("weekly-summary", help="Generate/send weekly summary to Kia")
     weekly.add_argument("--days", type=int, default=7)
-    weekly.add_argument("--email", action="store_true", help="Email summary")
-    weekly.add_argument(
-        "--to",
-        default=DEFAULT_REPORT_TO or KIA_EMAIL,
-        help="Recipient email for weekly summary (default LEADBOT_REPORT_TO or Kia)",
-    )
-    weekly.set_defaults(func=cmd_weekly_summary)
+    weekly.add_argument("--email", action="store_true", help="Email summary to Kia")
+    weekly.set_defaults(func=cmd_summary)
 
     return parser
 
