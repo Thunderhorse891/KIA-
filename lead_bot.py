@@ -26,6 +26,7 @@ DB_PATH = os.getenv("LEADBOT_DB", "leadbot.db")
 KIA_EMAIL = "KIACONWELL@PRIMERICA.COM"
 KIA_WEBSITE = "https://livemore.net/o/kia_conwell"
 DEFAULT_REF_OWNER = os.getenv("LEADBOT_REF_OWNER", "REF_PARTNER")
+DEFAULT_REPORT_TO = os.getenv("LEADBOT_REPORT_TO", "")
 
 PRIMERICA_CONTEXT = textwrap.dedent(
     """
@@ -82,7 +83,6 @@ class LeadBot:
                 )
                 """
             )
-            # Lightweight migrations for existing DBs
             for ddl in [
                 "ALTER TABLE leads ADD COLUMN invoice_amount REAL",
                 "ALTER TABLE leads ADD COLUMN invoice_sent_at TEXT",
@@ -287,8 +287,8 @@ def cmd_weekly_summary(args: argparse.Namespace) -> None:
     report = bot.weekly_summary(days=args.days)
     print(report)
     if args.email:
-        send_email(KIA_EMAIL, f"Weekly Leads Summary ({args.days} days)", report)
-        print("Weekly summary email sent.")
+        send_email(args.to, f"Weekly Leads Summary ({args.days} days)", report)
+        print(f"Weekly summary email sent to {args.to}.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -320,7 +320,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     weekly = sub.add_parser("weekly-summary", help="Generate weekly summary")
     weekly.add_argument("--days", type=int, default=7)
-    weekly.add_argument("--email", action="store_true", help="Email summary to Kia")
+    weekly.add_argument("--email", action="store_true", help="Email summary")
+    weekly.add_argument(
+        "--to",
+        default=DEFAULT_REPORT_TO or KIA_EMAIL,
+        help="Recipient email for weekly summary (default LEADBOT_REPORT_TO or Kia)",
+    )
     weekly.set_defaults(func=cmd_weekly_summary)
 
     return parser

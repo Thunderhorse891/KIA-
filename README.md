@@ -1,23 +1,19 @@
 # Kia Lead Generator Bot (Compliant)
 
-## Is this ready for full production?
-**Almost**. It is production-capable for workflow automation, but you should complete this checklist first:
+## What this does
+This bot gives you a complete referral pipeline:
 
-1. Configure a reliable SMTP provider and secrets manager for email credentials.
-2. Put `leadbot.db` on durable storage and schedule backups.
-3. Add access controls (who can run `mark-paid`/`mark-sold`).
-4. Review all outreach channels for platform terms + licensing compliance.
-5. Run this under a process scheduler (cron/GitHub Actions/server job).
-
-## What it does
-
-- Stores leads in SQLite with unique attribution code (`YOURTAG-LEAD-000123`)
-- Sends prospects to `KIACONWELL@PRIMERICA.COM` and website `https://livemore.net/o/kia_conwell` with attribution reference
-- Marks converted leads as sold and creates a $50 invoice message
-- Tracks whether the referral invoice has been paid (`mark-paid`)
-- Generates and optionally emails a weekly lead summary (`weekly-summary --email`)
+1. Capture lead details with source + attribution code.
+2. Route prospects to Kia (email + website).
+3. Mark conversions and generate a $50 referral invoice event.
+4. Mark which referral invoices are actually paid.
+5. Auto-send weekly summary reports by email.
 
 ## How to run it
+
+### Install / prerequisites
+- Python 3.9+
+- SMTP account (for email sending)
 
 ### 1) Add a lead
 ```bash
@@ -30,41 +26,51 @@ python3 lead_bot.py add \
   --owner "YOURNAME"
 ```
 
-### 2) Mark that Kia made a sale (creates invoice text)
+### 2) Mark Kia sale and invoice trigger
 ```bash
 python3 lead_bot.py mark-sold --ref-code YOURNAME-LEAD-000001 --sale-amount 1200 --invoice-amount 50
 ```
 
-### 3) Track ones that pay you
-When Kia pays the referral fee:
+### 3) Mark paid referrals (track who paid you)
 ```bash
 python3 lead_bot.py mark-paid --ref-code YOURNAME-LEAD-000001 --paid-amount 50
 ```
 
-### 4) Send him a weekly email of leads
+### 4) Generate weekly report (console)
+```bash
+python3 lead_bot.py weekly-summary --days 7
+```
+
+### 5) Email weekly report to yourself
+```bash
+python3 lead_bot.py weekly-summary --days 7 --email --to you@example.com
+```
+
+## Fully automated weekly report to yourself
+
+### A) Set environment variables (recommended)
+```bash
+export SMTP_HOST="smtp.yourprovider.com"
+export SMTP_PORT="587"
+export SMTP_USER="you@example.com"
+export SMTP_PASS="YOUR_APP_PASSWORD"
+export SMTP_FROM="you@example.com"
+export LEADBOT_REPORT_TO="you@example.com"
+```
+
+Now you can run:
 ```bash
 python3 lead_bot.py weekly-summary --days 7 --email
 ```
 
-## SMTP setup (required for live emails)
-
-Set environment variables:
-- `SMTP_HOST`
-- `SMTP_PORT` (default `587`)
-- `SMTP_USER`
-- `SMTP_PASS`
-- `SMTP_FROM` (optional)
-
-## Automate weekly send (cron)
-Run every Monday at 8:00 AM:
+### B) Add cron job (runs every Monday at 8:00 AM)
 ```bash
-0 8 * * 1 cd /workspace/KIA- && /usr/bin/python3 lead_bot.py weekly-summary --db leadbot.db --days 7 --email
+0 8 * * 1 cd /workspace/KIA- && /usr/bin/python3 lead_bot.py --db leadbot.db weekly-summary --days 7 --email
 ```
 
+## Contacts used by bot
+- Kia Email: `KIACONWELL@PRIMERICA.COM`
+- Kia Website: `https://livemore.net/o/kia_conwell`
+
 ## Compliance note
-This tool is designed for compliant lead management and human-reviewed outreach, not blind spam posting.
-
-
-## Contact destination used by the bot
-- Email: `KIACONWELL@PRIMERICA.COM`
-- Website: `https://livemore.net/o/kia_conwell`
+Use only compliant outreach and platform-approved engagement. This tool is for lead management and reporting, not blind spam automation.

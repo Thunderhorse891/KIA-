@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from lead_bot import Lead, LeadBot, draft_reply, invoice_text
+from lead_bot import Lead, LeadBot, build_parser, draft_reply, invoice_text
 
 
 class LeadBotTests(unittest.TestCase):
@@ -41,6 +41,11 @@ class LeadBotTests(unittest.TestCase):
         self.assertEqual(paid["status"], "paid")
         summary = self.bot.weekly_summary(days=7)
         self.assertIn("Referral invoices paid", summary)
+
+    def test_weekly_summary_parser_accepts_to_email(self):
+        parser = build_parser()
+        args = parser.parse_args(["weekly-summary", "--days", "7", "--email", "--to", "me@example.com"])
+        self.assertEqual(args.to, "me@example.com")
 
 
 if __name__ == "__main__":
