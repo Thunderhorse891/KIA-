@@ -43,7 +43,7 @@ python3 lead_bot.py weekly-summary --days 7
 
 ### 5) Email weekly report to yourself
 ```bash
-python3 lead_bot.py weekly-summary --days 7 --email --to you@example.com
+python3 lead_bot.py weekly-summary --days 7 --email --to Erin067841@outlook.com
 ```
 
 ## Fully automated weekly report to yourself
@@ -52,10 +52,10 @@ python3 lead_bot.py weekly-summary --days 7 --email --to you@example.com
 ```bash
 export SMTP_HOST="smtp.yourprovider.com"
 export SMTP_PORT="587"
-export SMTP_USER="you@example.com"
+export SMTP_USER="Erin067841@outlook.com"
 export SMTP_PASS="YOUR_APP_PASSWORD"
-export SMTP_FROM="you@example.com"
-export LEADBOT_REPORT_TO="you@example.com"
+export SMTP_FROM="Erin067841@outlook.com"
+export LEADBOT_REPORT_TO="Erin067841@outlook.com"
 ```
 
 Now you can run:

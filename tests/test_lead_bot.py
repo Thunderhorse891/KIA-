@@ -47,6 +47,11 @@ class LeadBotTests(unittest.TestCase):
         args = parser.parse_args(["weekly-summary", "--days", "7", "--email", "--to", "me@example.com"])
         self.assertEqual(args.to, "me@example.com")
 
+    def test_weekly_summary_default_to_user_email(self):
+        parser = build_parser()
+        args = parser.parse_args(["weekly-summary", "--days", "7", "--email"])
+        self.assertEqual(args.to, "Erin067841@outlook.com")
+
 
 if __name__ == "__main__":
     unittest.main()

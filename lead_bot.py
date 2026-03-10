@@ -26,7 +26,7 @@ DB_PATH = os.getenv("LEADBOT_DB", "leadbot.db")
 KIA_EMAIL = "KIACONWELL@PRIMERICA.COM"
 KIA_WEBSITE = "https://livemore.net/o/kia_conwell"
 DEFAULT_REF_OWNER = os.getenv("LEADBOT_REF_OWNER", "REF_PARTNER")
-DEFAULT_REPORT_TO = os.getenv("LEADBOT_REPORT_TO", "")
+DEFAULT_REPORT_TO = os.getenv("LEADBOT_REPORT_TO", "Erin067841@outlook.com")
 
 PRIMERICA_CONTEXT = textwrap.dedent(
     """
