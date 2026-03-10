@@ -22,6 +22,7 @@ class LeadBotTests(unittest.TestCase):
         lead = self.bot.get_lead(lead_id)
         self.assertTrue(lead["ref_code"].startswith("MYBRAND-LEAD-"))
         self.assertIn("KIACONWELL@PRIMERICA.COM", draft_reply(lead))
+        self.assertIn("https://livemore.net/o/kia_conwell", draft_reply(lead))
 
     def test_mark_sale_and_invoice(self):
         lead_id = self.bot.add_lead(Lead("web", "Lina", "lina@example.com", "Need debt help", "debt"))

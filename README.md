@@ -12,7 +12,7 @@
 ## What it does
 
 - Stores leads in SQLite with unique attribution code (`YOURTAG-LEAD-000123`)
-- Sends prospects to `KIACONWELL@PRIMERICA.COM` with attribution reference
+- Sends prospects to `KIACONWELL@PRIMERICA.COM` and website `https://livemore.net/o/kia_conwell` with attribution reference
 - Marks converted leads as sold and creates a $50 invoice message
 - Tracks whether the referral invoice has been paid (`mark-paid`)
 - Generates and optionally emails a weekly lead summary (`weekly-summary --email`)
@@ -63,3 +63,8 @@ Run every Monday at 8:00 AM:
 
 ## Compliance note
 This tool is designed for compliant lead management and human-reviewed outreach, not blind spam posting.
+
+
+## Contact destination used by the bot
+- Email: `KIACONWELL@PRIMERICA.COM`
+- Website: `https://livemore.net/o/kia_conwell`

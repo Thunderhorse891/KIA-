@@ -24,6 +24,7 @@ from typing import Optional
 
 DB_PATH = os.getenv("LEADBOT_DB", "leadbot.db")
 KIA_EMAIL = "KIACONWELL@PRIMERICA.COM"
+KIA_WEBSITE = "https://livemore.net/o/kia_conwell"
 DEFAULT_REF_OWNER = os.getenv("LEADBOT_REF_OWNER", "REF_PARTNER")
 
 PRIMERICA_CONTEXT = textwrap.dedent(
@@ -195,6 +196,7 @@ def draft_reply(lead: dict) -> str:
         you compare options in plain language and build a practical plan.
 
         Contact: {KIA_EMAIL}
+        Website: {KIA_WEBSITE}
         Reference code: {lead['ref_code']} (please include this in your message)
 
         Why Primerica:
@@ -258,7 +260,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         send_email(
             KIA_EMAIL,
             f"New Lead: {lead['name']} ({lead['ref_code']})",
-            f"New lead captured from {lead['source']}\n\n{draft_reply(lead)}",
+            f"New lead captured from {lead['source']}\nWebsite: {KIA_WEBSITE}\n\n{draft_reply(lead)}",
         )
 
 
