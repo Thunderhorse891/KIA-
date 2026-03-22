@@ -3,7 +3,7 @@
 # Save this anywhere on your computer and double-click to run
 
 $From     = "erinswyrick85@gmail.com"
-$AppPass  = "YOUR_GMAIL_APP_PASSWORD_HERE"
+$AppPass  = "vfmqmvcclevvvmkl"
 $To       = "kiaconwell@gmail.com"
 $Subject  = "Test - Lead Bot Email Working!"
 $Body     = @"
