@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import os
 import re
 import smtplib
@@ -369,66 +368,73 @@ def _tag(title: str, body: str) -> str:
 # Reddit scraper (read-only)
 # ---------------------------------------------------------------------------
 
-def _fetch_json(url: str) -> dict:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "InsuranceLeadBot/2.0 (contact kiaconwell@gmail.com)"},
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+_ATOM = "http://www.w3.org/2005/Atom"
+
+
+def _atom(tag: str) -> str:
+    return f"{{{_ATOM}}}{tag}"
 
 
 def scrape_reddit_leads(
-    keywords:   list[str] | None = None,
     subreddits: list[str] | None = None,
-    limit: int = 25,
     days:  int = 30,
 ) -> list[dict]:
-    if keywords   is None: keywords   = INSURANCE_KEYWORDS
+    """Scrape via subreddit RSS feeds -- no API key, no rate-limit issues."""
     if subreddits is None: subreddits = INSURANCE_SUBREDDITS
 
     cutoff = dt.datetime.utcnow() - dt.timedelta(days=days)
     raw: list[dict] = []
 
     for subreddit in subreddits:
-        for keyword in keywords:
-            url = (
-                f"https://www.reddit.com/r/{subreddit}/search.json"
-                f"?q={urllib.parse.quote(keyword)}&restrict_sr=1&sort=new"
-                f"&limit={limit}&t=month"
-            )
-            try:
-                data = _fetch_json(url)
-                for pw in data.get("data", {}).get("children", []):
-                    p = pw.get("data", {})
-                    if dt.datetime.utcfromtimestamp(p.get("created_utc", 0)) < cutoff:
+        url = f"https://www.reddit.com/r/{subreddit}/new.rss?limit=100"
+        try:
+            xml_text = _fetch_text(url)
+            root = ET.fromstring(xml_text)
+
+            for entry in root.findall(_atom("entry")):
+                title_el   = entry.find(_atom("title"))
+                link_el    = entry.find(_atom("link"))
+                content_el = entry.find(_atom("content"))
+                author_el  = entry.find(f"{_atom('author')}/{_atom('name')}")
+                updated_el = entry.find(_atom("updated"))
+
+                title  = (title_el.text  or "").strip()  if title_el   is not None else ""
+                link   = (link_el.get("href", ""))        if link_el    is not None else ""
+                body   = re.sub(r"<[^>]+>", " ",
+                                (content_el.text or "") if content_el is not None else "").strip()[:600]
+                author = ((author_el.text or "").replace("/u/", "").strip()
+                          if author_el is not None else "unknown")
+                updated_str = (updated_el.text or "") if updated_el is not None else ""
+
+                try:
+                    post_dt = dt.datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+                    if post_dt.replace(tzinfo=None) < cutoff:
                         continue
-                    if p.get("score", 0) < MIN_POST_SCORE:
-                        continue
-                    author = p.get("author", "")
-                    if author in ("[deleted]", "AutoModerator", ""):
-                        continue
-                    if p.get("removed_by_category") or p.get("stickied"):
-                        continue
-                    ad = ["agent here", "dm me for", "i'm an agent", "i am an agent"]
-                    title = p.get("title", "")
-                    body  = p.get("selftext", "")
-                    if any(s in (title + body).lower() for s in ad):
-                        continue
-                    if not _qualifies(title, body):
-                        continue
-                    raw.append({
-                        "source":   f"reddit:r/{subreddit}",
-                        "name":     author,
-                        "email":    f"reddit:u/{author}",
-                        "question": title[:500],
-                        "body":     body.strip()[:600],
-                        "tags":     _tag(title, body),
-                        "url":      f"https://reddit.com{p.get('permalink', '')}",
-                    })
-                time.sleep(1.5)
-            except Exception as exc:
-                print(f"  [Reddit] r/{subreddit} '{keyword}': {exc}")
+                except Exception:
+                    pass
+
+                if not title:
+                    continue
+                if author in ("[deleted]", "AutoModerator", ""):
+                    continue
+                ad = ["agent here", "dm me for", "i'm an agent", "i am an agent"]
+                if any(s in (title + body).lower() for s in ad):
+                    continue
+                if not _qualifies(title, body):
+                    continue
+
+                raw.append({
+                    "source":   f"reddit:r/{subreddit}",
+                    "name":     author,
+                    "email":    f"reddit:u/{author}",
+                    "question": title[:500],
+                    "body":     body,
+                    "tags":     _tag(title, body),
+                    "url":      link,
+                })
+            time.sleep(3.0)
+        except Exception as exc:
+            print(f"  [Reddit] r/{subreddit}: {exc}")
 
     seen:   set[tuple] = set()
     unique: list[dict] = []
@@ -619,7 +625,7 @@ def finder_fee_invoice_text(referral: dict, finder_fee_amount: float) -> str:
 
 def cmd_scrape_web(args: argparse.Namespace) -> None:
     print(f"Scraping Reddit for insurance leads (last {args.days} days)...")
-    reddit_leads = scrape_reddit_leads(limit=args.limit, days=args.days)
+    reddit_leads = scrape_reddit_leads(days=args.days)
     print(f"  Reddit: {len(reddit_leads)} qualifying posts found.")
 
     print("Scraping Craigslist for insurance leads...")

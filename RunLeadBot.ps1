@@ -35,7 +35,7 @@ Insurance Lead Bot
 """
 
 from __future__ import annotations
-import argparse, datetime as dt, json, os, re, smtplib, sqlite3, textwrap
+import argparse, datetime as dt, os, re, smtplib, sqlite3, textwrap
 import time, urllib.parse, urllib.request, xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -287,42 +287,47 @@ def _tag(title, body):
         tags.append("home-insurance")
     return ",".join(tags) if tags else "insurance"
 
-# ── Reddit scraper ────────────────────────────────────────────────────────────
+# ── Reddit scraper (RSS -- no API key needed) ─────────────────────────────────
 
-def _fetch_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent":"InsuranceLeadBot/2.0"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read().decode("utf-8"))
+_ATOM = "http://www.w3.org/2005/Atom"
+def _atom(t): return f"{{{_ATOM}}}{t}"
 
-def scrape_reddit_leads(limit=25, days=30):
+def scrape_reddit_leads(days=30):
     cutoff = dt.datetime.utcnow()-dt.timedelta(days=days)
     raw = []
     for sub in INSURANCE_SUBREDDITS:
-        for kw in INSURANCE_KEYWORDS:
-            url = (f"https://www.reddit.com/r/{sub}/search.json"
-                   f"?q={urllib.parse.quote(kw)}&restrict_sr=1&sort=new&limit={limit}&t=month")
-            try:
-                data = _fetch_json(url)
-                for pw in data.get("data",{}).get("children",[]):
-                    p = pw.get("data",{})
-                    if dt.datetime.utcfromtimestamp(p.get("created_utc",0)) < cutoff: continue
-                    if p.get("score",0) < 1: continue
-                    author = p.get("author","")
-                    if author in ("[deleted]","AutoModerator",""): continue
-                    if p.get("removed_by_category") or p.get("stickied"): continue
-                    title = p.get("title",""); body = p.get("selftext","")
-                    if any(s in (title+body).lower() for s in
-                           ["agent here","dm me for","i'm an agent","i am an agent"]): continue
-                    if not _qualifies(title, body): continue
-                    raw.append({
-                        "source": f"reddit:r/{sub}", "name": author,
-                        "email": f"reddit:u/{author}", "question": title[:500],
-                        "body": body.strip()[:600], "tags": _tag(title,body),
-                        "url": f"https://reddit.com{p.get('permalink','')}",
-                    })
-                time.sleep(1.5)
-            except Exception as e:
-                print(f"  [Reddit] r/{sub} '{kw}': {e}")
+        url = f"https://www.reddit.com/r/{sub}/new.rss?limit=100"
+        try:
+            xml_text = _fetch_text(url)
+            root = ET.fromstring(xml_text)
+            for entry in root.findall(_atom("entry")):
+                te = entry.find(_atom("title"))
+                le = entry.find(_atom("link"))
+                ce = entry.find(_atom("content"))
+                ae = entry.find(f"{_atom('author')}/{_atom('name')}")
+                ue = entry.find(_atom("updated"))
+                title  = (te.text or "").strip() if te is not None else ""
+                link   = le.get("href","") if le is not None else ""
+                body   = re.sub(r"<[^>]+>"," ",(ce.text or "") if ce is not None else "").strip()[:600]
+                author = ((ae.text or "").replace("/u/","").strip()) if ae is not None else "unknown"
+                upd    = (ue.text or "") if ue is not None else ""
+                try:
+                    pdt = dt.datetime.fromisoformat(upd.replace("Z","+00:00"))
+                    if pdt.replace(tzinfo=None) < cutoff: continue
+                except Exception: pass
+                if not title: continue
+                if author in ("[deleted]","AutoModerator",""): continue
+                if any(s in (title+body).lower() for s in
+                       ["agent here","dm me for","i'm an agent","i am an agent"]): continue
+                if not _qualifies(title, body): continue
+                raw.append({
+                    "source": f"reddit:r/{sub}", "name": author,
+                    "email": f"reddit:u/{author}", "question": title[:500],
+                    "body": body, "tags": _tag(title,body), "url": link,
+                })
+            time.sleep(3.0)
+        except Exception as e:
+            print(f"  [Reddit] r/{sub}: {e}")
     seen = set(); unique = []
     for l in raw:
         k = (l["name"],l["question"])
@@ -332,7 +337,7 @@ def scrape_reddit_leads(limit=25, days=30):
 # ── Craigslist scraper ────────────────────────────────────────────────────────
 
 def _fetch_text(url):
-    req = urllib.request.Request(url, headers={"User-Agent":"InsuranceLeadBot/2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent":"InsuranceLeadBot/2.0 (contact kiaconwell@gmail.com)"})
     with urllib.request.urlopen(req, timeout=15) as r:
         return r.read().decode("utf-8", errors="replace")
 
