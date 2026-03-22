@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Referral / finder's-fee tracker for prospects sent to a partner.
-
-Product framing:
-- Scrape public web sources (Reddit, forums) for people looking for auto/home insurance.
-- Track referred prospects sent to your friend/partner Kia Conwell.
-- Record when a referred prospect becomes your partner's customer (signs a contract).
-- Track expected and paid finder's fees.
-- Email referral summaries (weekly by default) to you.
+"""
+Insurance Lead Bot
+- Scrapes Reddit + Craigslist for people shopping for auto/home insurance
+- Filters out GA, FL, NY (states where partner is not licensed)
+- Filters out health/life/flood/etc -- only auto and home/renters
+- Filters out complainers -- must show actual buying intent
+- Accumulates leads silently; sends ONE batch digest email when 50+ are ready
+- Read-only -- never posts anywhere
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime as dt
 import json
 import os
@@ -23,61 +22,116 @@ import textwrap
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from typing import Optional
 
-DB_PATH = os.getenv("LEADBOT_DB", "leadbot.db")
-PARTNER_EMAIL = os.getenv("PARTNER_EMAIL", "kiaconwell@gmail.com")
-PARTNER_WEBSITE = "https://livemore.net/o/kia_conwell"
-DEFAULT_REF_OWNER = os.getenv("LEADBOT_REF_OWNER", "ERIN")
-DEFAULT_REPORT_TO = os.getenv("LEADBOT_REPORT_TO", "Erin067841@outlook.com")
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+DB_PATH          = os.getenv("LEADBOT_DB",         "leadbot.db")
+PARTNER_EMAIL    = os.getenv("PARTNER_EMAIL",       "kiaconwell@gmail.com")
+PARTNER_WEBSITE  = "https://livemore.net/o/kia_conwell"
+DEFAULT_REF_OWNER = os.getenv("LEADBOT_REF_OWNER",  "ERIN")
+DEFAULT_REPORT_TO = os.getenv("LEADBOT_REPORT_TO",  "erinswyrick85@gmail.com")
 DEFAULT_FEE_AMOUNT = float(os.getenv("LEADBOT_DEFAULT_FEE", "50"))
-
-PARTNER_CONTEXT = textwrap.dedent(
-    """
-    Kia Conwell is a licensed insurance agent helping families protect their homes,
-    cars, and loved ones. She provides personalized quotes for:
-      - Auto / car insurance
-      - Home / homeowners insurance
-      - Bundled auto + home discounts
-    Contact Kia for a free quote: kiaconwell@gmail.com
-    Website: https://livemore.net/o/kia_conwell
-    """
-).strip()
+BATCH_THRESHOLD  = int(os.getenv("LEADBOT_BATCH_SIZE", "50"))
 
 # ---------------------------------------------------------------------------
-# Subreddits and keywords used by the web scraper
+# Geographic filter -- Kia is not licensed in GA, FL, or NY
 # ---------------------------------------------------------------------------
+
+EXCLUDED_STATE_TERMS = [
+    # Georgia
+    "georgia", " ga ", " ga,", "(ga)", "atlanta", "savannah", "augusta", "macon",
+    # Florida
+    "florida", " fl ", " fl,", "(fl)", "miami", "orlando", "tampa", "jacksonville",
+    "fort lauderdale", "tallahassee", "gainesville", "pensacola",
+    # New York
+    "new york", " ny ", " ny,", "(ny)", "nyc", "manhattan", "brooklyn",
+    "bronx", "queens", "staten island", "buffalo", "rochester", "yonkers",
+]
+
+# ---------------------------------------------------------------------------
+# Insurance-type filter -- auto and home/renters only
+# ---------------------------------------------------------------------------
+
+TARGET_INSURANCE = [
+    "auto insurance", "car insurance", "vehicle insurance", "truck insurance",
+    "home insurance", "homeowners insurance", "homeowner insurance",
+    "renters insurance", "house insurance", "property insurance",
+    "condo insurance", "bundle", "bundl",
+]
+
+NON_TARGET_INSURANCE = [
+    "health insurance", "medical insurance", "life insurance", "term life",
+    "whole life", "dental insurance", "vision insurance", "pet insurance",
+    "travel insurance", "flood insurance", "earthquake insurance",
+    "commercial insurance", "business insurance", "workers comp",
+    "disability insurance", "malpractice", "fire insurance",
+]
+
+# ---------------------------------------------------------------------------
+# Buying-intent filter -- shoppers only, not complainers
+# ---------------------------------------------------------------------------
+
+BUYING_INTENT = [
+    "looking for", "shopping for", "shopping around", "need insurance",
+    "want insurance", "switching", "switch from", "getting quotes",
+    "getting a quote", "quote", "compare", "comparison", "recommend",
+    "best insurance", "cheapest", "affordable", "help me find",
+    "first time", "new policy", "new home", "just bought", "just purchased",
+    "moving to", "just moved", "shop around", "options for", "suggestions",
+    "advice on", "which insurance", "what insurance", "who do you use",
+    "who to use", "any recommendations", "need help", "need advice",
+    "how do i", "how to get", "where to get", "best rate", "best price",
+    "save on", "lower my", "cheaper option",
+]
+
+COMPLAINT_ONLY = [
+    "claim was denied", "denied my claim", "they won't pay", "they wont pay",
+    "bad experience with", "avoid this company", "worst insurance company",
+    "insurance is a scam", "my agent screwed", "hate my insurance company",
+]
+
+# ---------------------------------------------------------------------------
+# Reddit config
+# ---------------------------------------------------------------------------
+
 INSURANCE_SUBREDDITS = [
-    "insurance",
-    "personalfinance",
-    "homeowners",
-    "FirstTimeHomeBuyer",
-    "frugal",
-    "homebuying",
-    "AutoInsurance",
+    "insurance", "personalfinance", "homeowners", "FirstTimeHomeBuyer",
+    "frugal", "homebuying", "AutoInsurance", "povertyfinance",
+    "askcarsales", "RealEstate",
 ]
 
 INSURANCE_KEYWORDS = [
-    "auto insurance quote",
-    "car insurance quote",
-    "home insurance quote",
-    "homeowners insurance quote",
-    "looking for car insurance",
-    "looking for home insurance",
-    "need auto insurance",
-    "need home insurance",
-    "switching car insurance",
-    "switching home insurance",
-    "cheaper car insurance",
-    "cheaper home insurance",
-    "bundle auto home",
+    "auto insurance quote", "car insurance quote",
+    "home insurance quote", "homeowners insurance quote",
+    "looking for car insurance", "looking for home insurance",
+    "need auto insurance", "need home insurance",
+    "switching car insurance", "switching home insurance",
+    "bundle auto home", "renters insurance", "shop around insurance",
+    "compare car insurance", "compare home insurance",
 ]
 
-# Minimum Reddit post score to consider (filters obvious spam/noise)
 MIN_POST_SCORE = 1
 
+# ---------------------------------------------------------------------------
+# Craigslist config -- cities in states where Kia IS licensed
+# ---------------------------------------------------------------------------
+
+CRAIGSLIST_CITIES = [
+    "chicago", "losangeles", "houston", "dallas", "phoenix",
+    "philadelphia", "seattle", "denver", "boston", "detroit",
+    "minneapolis", "portland", "lasvegas", "sandiego", "charlotte",
+    "nashville", "austin", "columbus", "indianapolis", "memphis",
+]
+
+CRAIGSLIST_QUERIES = [
+    "auto insurance quote", "home insurance quote", "car insurance quote",
+]
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -85,19 +139,16 @@ MIN_POST_SCORE = 1
 
 @dataclass
 class Referral:
-    source: str
-    name: str
-    email: str
+    source:   str
+    name:     str
+    email:    str
     question: str
-    tags: str
-
-
-# Backward-compatible alias
-Lead = Referral
+    tags:     str
+    body:     str = field(default="")
 
 
 # ---------------------------------------------------------------------------
-# Database layer
+# Database
 # ---------------------------------------------------------------------------
 
 class ReferralBot:
@@ -114,82 +165,70 @@ class ReferralBot:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS leads (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    email TEXT NOT NULL,
-                    question TEXT NOT NULL,
-                    tags TEXT,
-                    ref_code TEXT NOT NULL UNIQUE,
-                    status TEXT NOT NULL DEFAULT 'referred',
-                    sale_amount REAL,
-                    sold_at TEXT,
-                    invoice_amount REAL,
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at      TEXT NOT NULL,
+                    source          TEXT NOT NULL,
+                    name            TEXT NOT NULL,
+                    email           TEXT NOT NULL,
+                    question        TEXT NOT NULL,
+                    body            TEXT,
+                    tags            TEXT,
+                    ref_code        TEXT NOT NULL UNIQUE,
+                    status          TEXT NOT NULL DEFAULT 'referred',
+                    sale_amount     REAL,
+                    sold_at         TEXT,
+                    invoice_amount  REAL,
                     invoice_sent_at TEXT,
-                    invoice_paid INTEGER NOT NULL DEFAULT 0,
+                    invoice_paid    INTEGER NOT NULL DEFAULT 0,
                     invoice_paid_at TEXT,
-                    paid_amount REAL,
-                    post_url TEXT
+                    paid_amount     REAL,
+                    post_url        TEXT,
+                    notified_at     TEXT
                 )
-                """
-            )
+            """)
             for ddl in [
+                "ALTER TABLE leads ADD COLUMN body TEXT",
                 "ALTER TABLE leads ADD COLUMN invoice_amount REAL",
                 "ALTER TABLE leads ADD COLUMN invoice_sent_at TEXT",
                 "ALTER TABLE leads ADD COLUMN invoice_paid INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE leads ADD COLUMN invoice_paid_at TEXT",
                 "ALTER TABLE leads ADD COLUMN paid_amount REAL",
                 "ALTER TABLE leads ADD COLUMN post_url TEXT",
+                "ALTER TABLE leads ADD COLUMN notified_at TEXT",
             ]:
                 col = ddl.split("ADD COLUMN ", 1)[1].split()[0]
                 if not self._column_exists(conn, col):
                     conn.execute(ddl)
 
     def _build_ref_code(self, referral_id: int, owner: str = DEFAULT_REF_OWNER) -> str:
-        clean_owner = re.sub(r"[^A-Z0-9]", "", owner.upper())
-        return f"{clean_owner}-REF-{referral_id:06d}"
+        clean = re.sub(r"[^A-Z0-9]", "", owner.upper())
+        return f"{clean}-REF-{referral_id:06d}"
 
     def add_referral(self, referral: Referral, owner: str = DEFAULT_REF_OWNER,
                      post_url: str = "") -> int:
         created_at = dt.datetime.utcnow().isoformat()
         with self._connect() as conn:
             cur = conn.execute(
-                """
-                INSERT INTO leads(created_at, source, name, email, question, tags,
-                                  ref_code, status, post_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'referred', ?)
-                """,
-                (
-                    created_at,
-                    referral.source,
-                    referral.name,
-                    referral.email,
-                    referral.question,
-                    referral.tags,
-                    "PENDING",
-                    post_url,
-                ),
+                """INSERT INTO leads
+                   (created_at, source, name, email, question, body, tags,
+                    ref_code, status, post_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'referred', ?)""",
+                (created_at, referral.source, referral.name, referral.email,
+                 referral.question, referral.body, referral.tags, "PENDING", post_url),
             )
-            referral_id = cur.lastrowid
-            ref_code = self._build_ref_code(referral_id, owner)
-            conn.execute("UPDATE leads SET ref_code=? WHERE id=?", (ref_code, referral_id))
-        return referral_id
+            rid = cur.lastrowid
+            ref_code = self._build_ref_code(rid, owner)
+            conn.execute("UPDATE leads SET ref_code=? WHERE id=?", (ref_code, rid))
+        return rid
 
     def referral_exists(self, name: str, question: str) -> bool:
-        """Return True if a lead with this exact (name, question) is already stored."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT id FROM leads WHERE name=? AND question=?", (name, question)
             ).fetchone()
             return row is not None
-
-    # Backward-compatible wrapper
-    def add_lead(self, lead: Lead, owner: str = DEFAULT_REF_OWNER) -> int:
-        return self.add_referral(lead, owner=owner)
 
     def get_referral(self, referral_id: int) -> Optional[dict]:
         with self._connect() as conn:
@@ -197,150 +236,363 @@ class ReferralBot:
             row = conn.execute("SELECT * FROM leads WHERE id=?", (referral_id,)).fetchone()
             return dict(row) if row else None
 
-    # Backward-compatible wrapper
-    def get_lead(self, lead_id: int) -> Optional[dict]:
-        return self.get_referral(lead_id)
-
     def get_referral_by_code(self, ref_code: str) -> Optional[dict]:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM leads WHERE ref_code=?", (ref_code,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM leads WHERE ref_code=?", (ref_code,)
+            ).fetchone()
             return dict(row) if row else None
 
-    # Backward-compatible wrapper
-    def get_lead_by_ref(self, ref_code: str) -> Optional[dict]:
-        return self.get_referral_by_code(ref_code)
+    def count_unnotified(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM leads WHERE notified_at IS NULL"
+            ).fetchone()
+            return row[0] if row else 0
+
+    def get_unnotified_referrals(self) -> list[dict]:
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM leads WHERE notified_at IS NULL ORDER BY created_at ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def mark_notified(self, referral_ids: list[int]) -> None:
+        now = dt.datetime.utcnow().isoformat()
+        placeholders = ",".join("?" * len(referral_ids))
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE leads SET notified_at=? WHERE id IN ({placeholders})",
+                [now] + referral_ids,
+            )
 
     def mark_partner_closed(self, ref_code: str, sale_amount: float,
                              finder_fee_amount: float) -> bool:
         sold_at = dt.datetime.utcnow().isoformat()
         with self._connect() as conn:
             cur = conn.execute(
-                """
-                UPDATE leads
-                SET status='partner_closed', sale_amount=?, sold_at=?,
-                    invoice_amount=?, invoice_sent_at=?
-                WHERE ref_code=?
-                """,
+                """UPDATE leads
+                   SET status='partner_closed', sale_amount=?, sold_at=?,
+                       invoice_amount=?, invoice_sent_at=?
+                   WHERE ref_code=?""",
                 (sale_amount, sold_at, finder_fee_amount, sold_at, ref_code),
             )
             return cur.rowcount > 0
-
-    # Backward-compatible wrapper
-    def mark_sale(self, ref_code: str, sale_amount: float,
-                  invoice_amount: float = DEFAULT_FEE_AMOUNT) -> bool:
-        return self.mark_partner_closed(ref_code, sale_amount, invoice_amount)
 
     def mark_finder_fee_paid(self, ref_code: str, paid_amount: float) -> bool:
         paid_at = dt.datetime.utcnow().isoformat()
         with self._connect() as conn:
             cur = conn.execute(
-                """
-                UPDATE leads
-                SET invoice_paid=1, invoice_paid_at=?, paid_amount=?, status='fee_paid'
-                WHERE ref_code=?
-                """,
+                """UPDATE leads
+                   SET invoice_paid=1, invoice_paid_at=?, paid_amount=?, status='fee_paid'
+                   WHERE ref_code=?""",
                 (paid_at, paid_amount, ref_code),
             )
             return cur.rowcount > 0
-
-    # Backward-compatible wrapper
-    def mark_paid(self, ref_code: str, paid_amount: float) -> bool:
-        return self.mark_finder_fee_paid(ref_code, paid_amount)
 
     def referral_summary(self, days: int = 7) -> str:
         since = (dt.datetime.utcnow() - dt.timedelta(days=days)).isoformat()
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             referrals = conn.execute(
-                "SELECT * FROM leads WHERE created_at >= ? ORDER BY created_at DESC", (since,)
+                "SELECT * FROM leads WHERE created_at >= ? ORDER BY created_at DESC",
+                (since,),
             ).fetchall()
+        total  = len(referrals)
+        closed = sum(1 for r in referrals if r["status"] in ("partner_closed", "fee_paid"))
+        paid   = sum(1 for r in referrals if r["invoice_paid"] == 1)
+        rows   = [
+            f"  {r['ref_code']} | {r['name']} | status={r['status']} "
+            f"| fee_paid={bool(r['invoice_paid'])}"
+            for r in referrals
+        ]
+        return (
+            f"Referral Summary (last {days} days) -- "
+            f"{dt.datetime.utcnow().isoformat()} UTC\n"
+            f"Total: {total}  |  Closed by Kia: {closed}  |  Fees paid: {paid}\n\n"
+            + ("\n".join(rows) if rows else "No referrals in period")
+        )
 
-            total = len(referrals)
-            closed = sum(
-                1 for r in referrals
-                if r["status"] in ("partner_closed", "fee_paid", "sold", "paid")
+
+# ---------------------------------------------------------------------------
+# Lead quality filters
+# ---------------------------------------------------------------------------
+
+def _contains_excluded_state(text: str) -> bool:
+    t = " " + text.lower() + " "
+    return any(term in t for term in EXCLUDED_STATE_TERMS)
+
+
+def _is_target_insurance(title: str, body: str) -> bool:
+    combined = (title + " " + body).lower()
+    if not any(t in combined for t in TARGET_INSURANCE):
+        return False
+    title_lower = title.lower()
+    non_hits = sum(1 for t in NON_TARGET_INSURANCE if t in title_lower)
+    tgt_hits  = sum(1 for t in TARGET_INSURANCE    if t in title_lower)
+    if non_hits > 0 and tgt_hits == 0:
+        return False
+    return True
+
+
+def _has_buying_intent(title: str, body: str) -> bool:
+    combined = (title + " " + body).lower()
+    has_intent = any(t in combined for t in BUYING_INTENT)
+    pure_complaint = any(t in combined for t in COMPLAINT_ONLY) and not has_intent
+    return has_intent and not pure_complaint
+
+
+def _qualifies(title: str, body: str) -> bool:
+    text = title + " " + body
+    if _contains_excluded_state(text):
+        return False
+    if not _is_target_insurance(title, body):
+        return False
+    if not _has_buying_intent(title, body):
+        return False
+    return True
+
+
+def _tag(title: str, body: str) -> str:
+    combined = (title + " " + body).lower()
+    tags = []
+    if any(w in combined for w in ["auto", "car", "vehicle", "truck", "motorcycle"]):
+        tags.append("auto-insurance")
+    if any(w in combined for w in ["home", "house", "homeowner", "property", "renters", "condo"]):
+        tags.append("home-insurance")
+    return ",".join(tags) if tags else "insurance"
+
+
+# ---------------------------------------------------------------------------
+# Reddit scraper (read-only)
+# ---------------------------------------------------------------------------
+
+def _fetch_json(url: str) -> dict:
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "InsuranceLeadBot/2.0 (contact kiaconwell@gmail.com)"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def scrape_reddit_leads(
+    keywords:   list[str] | None = None,
+    subreddits: list[str] | None = None,
+    limit: int = 25,
+    days:  int = 30,
+) -> list[dict]:
+    if keywords   is None: keywords   = INSURANCE_KEYWORDS
+    if subreddits is None: subreddits = INSURANCE_SUBREDDITS
+
+    cutoff = dt.datetime.utcnow() - dt.timedelta(days=days)
+    raw: list[dict] = []
+
+    for subreddit in subreddits:
+        for keyword in keywords:
+            url = (
+                f"https://www.reddit.com/r/{subreddit}/search.json"
+                f"?q={urllib.parse.quote(keyword)}&restrict_sr=1&sort=new"
+                f"&limit={limit}&t=month"
             )
-            paid = sum(1 for r in referrals if r["invoice_paid"] == 1)
-            unpaid = closed - paid
+            try:
+                data = _fetch_json(url)
+                for pw in data.get("data", {}).get("children", []):
+                    p = pw.get("data", {})
+                    if dt.datetime.utcfromtimestamp(p.get("created_utc", 0)) < cutoff:
+                        continue
+                    if p.get("score", 0) < MIN_POST_SCORE:
+                        continue
+                    author = p.get("author", "")
+                    if author in ("[deleted]", "AutoModerator", ""):
+                        continue
+                    if p.get("removed_by_category") or p.get("stickied"):
+                        continue
+                    ad = ["agent here", "dm me for", "i'm an agent", "i am an agent"]
+                    title = p.get("title", "")
+                    body  = p.get("selftext", "")
+                    if any(s in (title + body).lower() for s in ad):
+                        continue
+                    if not _qualifies(title, body):
+                        continue
+                    raw.append({
+                        "source":   f"reddit:r/{subreddit}",
+                        "name":     author,
+                        "email":    f"reddit:u/{author}",
+                        "question": title[:500],
+                        "body":     body.strip()[:600],
+                        "tags":     _tag(title, body),
+                        "url":      f"https://reddit.com{p.get('permalink', '')}",
+                    })
+                time.sleep(1.5)
+            except Exception as exc:
+                print(f"  [Reddit] r/{subreddit} '{keyword}': {exc}")
 
-            rows = [
-                f"- {r['ref_code']} | {r['name']} | {r['email']} | "
-                f"status={r['status']} | fee_paid={bool(r['invoice_paid'])}"
-                for r in referrals
-            ]
+    seen:   set[tuple] = set()
+    unique: list[dict] = []
+    for lead in raw:
+        key = (lead["name"], lead["question"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(lead)
+    return unique
 
-        return textwrap.dedent(
-            f"""
-            Referral Summary (last {days} day{'s' if days != 1 else ''})
-            Generated: {dt.datetime.utcnow().isoformat()} UTC
 
-            Total referred prospects: {total}
-            Became partner customers (signed contracts): {closed}
-            Finder's fees paid: {paid}
-            Finder's fees unpaid: {unpaid}
+# ---------------------------------------------------------------------------
+# Craigslist scraper (read-only, RSS)
+# ---------------------------------------------------------------------------
 
-            Referrals:
-            {chr(10).join(rows) if rows else '- No referrals in period'}
-            """
-        ).strip()
+def _fetch_text(url: str) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "InsuranceLeadBot/2.0 (contact kiaconwell@gmail.com)"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8", errors="replace")
 
-    # Backward-compatible wrapper
-    def summary(self, days: int = 7) -> str:
-        return self.referral_summary(days=days)
+
+def scrape_craigslist_leads() -> list[dict]:
+    raw: list[dict] = []
+
+    for city in CRAIGSLIST_CITIES:
+        for query in CRAIGSLIST_QUERIES:
+            url = (
+                f"https://{city}.craigslist.org/search/fns"
+                f"?query={urllib.parse.quote(query)}&sort=date&format=rss"
+            )
+            try:
+                xml_text = _fetch_text(url)
+                root    = ET.fromstring(xml_text)
+                channel = root.find("channel")
+                if channel is None:
+                    continue
+                for item in channel.findall("item"):
+                    title_el = item.find("title")
+                    link_el  = item.find("link")
+                    desc_el  = item.find("description")
+                    title = (title_el.text or "") if title_el is not None else ""
+                    link  = (link_el.text  or "") if link_el  is not None else ""
+                    desc  = re.sub(
+                        r"<[^>]+>", " ",
+                        (desc_el.text or "") if desc_el is not None else ""
+                    ).strip()[:600]
+
+                    if not title.strip():
+                        continue
+                    if not _qualifies(title, desc):
+                        continue
+
+                    raw.append({
+                        "source":   f"craigslist:{city}",
+                        "name":     f"cl-{city}-anon",
+                        "email":    f"craigslist:{link}",
+                        "question": title[:500],
+                        "body":     desc,
+                        "tags":     _tag(title, desc),
+                        "url":      link,
+                    })
+                time.sleep(1.0)
+            except Exception as exc:
+                print(f"  [Craigslist] {city} '{query}': {exc}")
+
+    seen:   set[tuple] = set()
+    unique: list[dict] = []
+    for lead in raw:
+        key = (lead["name"], lead["question"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(lead)
+    return unique
 
 
 # ---------------------------------------------------------------------------
 # Email helpers
 # ---------------------------------------------------------------------------
 
-def draft_partner_intro(referral: dict) -> str:
-    post_line = ""
-    if referral.get("post_url"):
-        post_line = f"\nOriginal post: {referral['post_url']}"
+def send_email(to_email: str, subject: str, body: str) -> None:
+    host      = os.getenv("SMTP_HOST")
+    port      = int(os.getenv("SMTP_PORT", "587"))
+    user      = os.getenv("SMTP_USER")
+    password  = os.getenv("SMTP_PASS")
+    from_email = os.getenv("SMTP_FROM", user or "leadbot@localhost")
 
-    contact_line = referral["email"]
-    if referral["email"].startswith("reddit:"):
-        username = referral["email"].replace("reddit:", "")
-        contact_line = f"Reddit {username}{post_line}"
-    else:
-        contact_line = referral["email"]
+    if not host or not user or not password:
+        raise RuntimeError("SMTP_HOST, SMTP_USER, SMTP_PASS are required.")
 
-    return textwrap.dedent(
-        f"""
-        Hi Kia,
+    msg = EmailMessage()
+    msg["From"]    = from_email
+    msg["To"]      = to_email
+    msg["Subject"] = subject
+    msg.set_content(body, charset="utf-8")
 
-        New insurance lead for you — this person is actively looking for
-        auto or home insurance and could be a great fit for a free quote.
-
-        Name / Username : {referral['name']}
-        Contact         : {contact_line}
-        Source          : {referral['source']}
-        Referral Code   : {referral['ref_code']}
-        Their Question  : {referral['question']}
-        Tags            : {referral.get('tags', '')}
-
-        {PARTNER_CONTEXT}
-
-        Please follow up and let me know if they sign a contract so I can
-        record the finder's fee. Reference code: {referral['ref_code']}
-        """
-    ).strip()
+    with smtplib.SMTP(host, port) as server:
+        server.starttls()
+        server.login(user, password)
+        server.send_message(msg)
 
 
-# Backward-compatible wrapper
-def draft_reply(lead: dict) -> str:
-    return draft_partner_intro(lead)
+def format_batch_digest(referrals: list[dict]) -> str:
+    today = dt.datetime.utcnow().strftime("%B %d, %Y")
+    lines = [
+        f"Hi Kia,",
+        f"",
+        f"Here are {len(referrals)} new insurance leads as of {today}.",
+        f"Each person is actively shopping for auto or home insurance.",
+        f"",
+        f"Your quote link: {PARTNER_WEBSITE}",
+        f"",
+        f"When a lead signs a contract with you, reply with their referral",
+        f"code so Erin can track the finder's fee.",
+        f"",
+        "=" * 60,
+    ]
+
+    for i, ref in enumerate(referrals, 1):
+        email_val = ref["email"]
+        if email_val.startswith("reddit:"):
+            contact = f"Reddit {email_val.replace('reddit:', '')}"
+        elif email_val.startswith("craigslist:"):
+            contact = "See post link below"
+        else:
+            contact = email_val
+
+        post_url  = ref.get("post_url") or ""
+        body_text = (ref.get("body") or "").strip()
+
+        lines += [
+            f"",
+            f"LEAD #{i}  --  {ref['ref_code']}",
+            f"  Source     : {ref['source']}",
+            f"  Username   : {ref['name']}",
+            f"  Contact    : {contact}",
+            f"  Tags       : {ref.get('tags', '')}",
+            f"  Their Post : {ref['question']}",
+        ]
+        if body_text:
+            lines.append(f"  Details    : {body_text[:300]}")
+        if post_url:
+            lines.append(f"  Link       : {post_url}")
+        lines.append("  " + "-" * 56)
+
+    lines += [
+        "",
+        "=" * 60,
+        f"Total leads in this batch: {len(referrals)}",
+        f"",
+        f"Questions? Contact Erin: erinswyrick85@gmail.com",
+    ]
+    return "\n".join(lines)
 
 
 def finder_fee_invoice_text(referral: dict, finder_fee_amount: float) -> str:
-    return textwrap.dedent(
-        f"""
-        Subject: Finder's Fee Invoice - {referral['ref_code']}
+    return textwrap.dedent(f"""
+        Finder's Fee Invoice -- {referral['ref_code']}
 
         Hi Kia,
 
-        Referral {referral['ref_code']} has been confirmed as a partner-closed customer
+        Referral {referral['ref_code']} has been confirmed as a closed customer
         (they signed an insurance contract with you).
 
         Referred Prospect : {referral['name']}
@@ -352,295 +604,98 @@ def finder_fee_invoice_text(referral: dict, finder_fee_amount: float) -> str:
         Terms             : Net 7
 
         Follow-up schedule if unpaid:
-        - Day 1  : Invoice (this message)
-        - Day 7  : Reminder
-        - Day 14 : Reminder
-        - Day 21 : Final reminder
+          Day 1  : Invoice (this message)
+          Day 7  : Reminder
+          Day 14 : Reminder
+          Day 21 : Final reminder
 
         Payment: Zelle / Cash App / PayPal
-        """
-    ).strip()
-
-
-# Backward-compatible wrapper
-def invoice_text(lead: dict, invoice_amount: float = DEFAULT_FEE_AMOUNT) -> str:
-    return finder_fee_invoice_text(lead, invoice_amount)
-
-
-def send_email(to_email: str, subject: str, body: str) -> None:
-    host = os.getenv("SMTP_HOST")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER")
-    password = os.getenv("SMTP_PASS")
-    from_email = os.getenv("SMTP_FROM", user or "leadbot@localhost")
-
-    if not host or not user or not password:
-        raise RuntimeError("SMTP_HOST, SMTP_USER, SMTP_PASS are required.")
-
-    msg = EmailMessage()
-    msg["From"] = from_email
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    with smtplib.SMTP(host, port) as server:
-        server.starttls()
-        server.login(user, password)
-        server.send_message(msg)
-
-
-# ---------------------------------------------------------------------------
-# Web scraper  — Reddit public JSON API (no auth needed for public posts)
-# ---------------------------------------------------------------------------
-
-def _reddit_fetch(url: str) -> dict:
-    """Fetch a Reddit JSON endpoint with a polite User-Agent."""
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "InsuranceLeadBot/1.0 (referral-tracker; contact kiaconwell@gmail.com)"},
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _is_legit_post(post: dict) -> bool:
-    """Return True if the post looks like a genuine person asking about insurance."""
-    author = post.get("author", "")
-    title = (post.get("title") or "").lower()
-    body = (post.get("selftext") or "").lower()
-
-    # Skip deleted / removed / bot-like entries
-    if author in ("[deleted]", "AutoModerator", ""):
-        return False
-    if post.get("removed_by_category"):
-        return False
-    # Skip stickied mod posts
-    if post.get("stickied"):
-        return False
-    # Must have meaningful content (title is enough)
-    if len(title.strip()) < 10:
-        return False
-    # Skip posts that are just self-promotion or ads
-    ad_signals = ["agent here", "dm me", "i'm an agent", "i am an agent", "shop with me"]
-    if any(s in title or s in body for s in ad_signals):
-        return False
-    # Require at least some insurance relevance in the title or body
-    insurance_words = ["insurance", "insure", "premium", "deductible", "coverage",
-                       "quote", "policy", "bundle", "rate"]
-    combined = title + " " + body
-    if not any(w in combined for w in insurance_words):
-        return False
-    return True
-
-
-def scrape_reddit_leads(
-    keywords: list[str] | None = None,
-    subreddits: list[str] | None = None,
-    limit: int = 25,
-    days: int = 30,
-) -> list[dict]:
-    """
-    Search Reddit for people actively asking about auto / home insurance.
-
-    Returns a list of raw lead dicts with keys:
-      source, name, email (reddit:u/username), question, tags, url, body
-    """
-    if keywords is None:
-        keywords = INSURANCE_KEYWORDS
-    if subreddits is None:
-        subreddits = INSURANCE_SUBREDDITS
-
-    cutoff = dt.datetime.utcnow() - dt.timedelta(days=days)
-    raw_leads: list[dict] = []
-
-    for subreddit in subreddits:
-        for keyword in keywords:
-            encoded = urllib.parse.quote(keyword)
-            url = (
-                f"https://www.reddit.com/r/{subreddit}/search.json"
-                f"?q={encoded}&restrict_sr=1&sort=new&limit={limit}&t=month"
-            )
-            try:
-                data = _reddit_fetch(url)
-                posts = data.get("data", {}).get("children", [])
-                for post_wrapper in posts:
-                    p = post_wrapper.get("data", {})
-                    created = dt.datetime.utcfromtimestamp(p.get("created_utc", 0))
-                    if created < cutoff:
-                        continue
-                    if p.get("score", 0) < MIN_POST_SCORE:
-                        continue
-                    if not _is_legit_post(p):
-                        continue
-
-                    # Determine whether this is auto, home, or both
-                    combined = ((p.get("title") or "") + " " + (p.get("selftext") or "")).lower()
-                    tags_list = []
-                    if any(w in combined for w in ["auto", "car", "vehicle", "truck", "motorcycle"]):
-                        tags_list.append("auto-insurance")
-                    if any(w in combined for w in ["home", "house", "homeowner", "property", "renters"]):
-                        tags_list.append("home-insurance")
-                    if not tags_list:
-                        tags_list.append("insurance")
-
-                    raw_leads.append({
-                        "source": f"reddit:r/{subreddit}",
-                        "name": p["author"],
-                        "email": f"reddit:u/{p['author']}",
-                        "question": (p.get("title") or "")[:500],
-                        "tags": ",".join(tags_list),
-                        "url": f"https://reddit.com{p.get('permalink', '')}",
-                        "body": (p.get("selftext") or "")[:400],
-                    })
-                time.sleep(1.5)  # be polite — Reddit rate limit is ~60 req/min
-            except Exception as exc:
-                print(f"  Warning: could not scrape r/{subreddit} for '{keyword}': {exc}")
-
-    # Deduplicate by (name, question)
-    seen: set[tuple] = set()
-    unique: list[dict] = []
-    for lead in raw_leads:
-        key = (lead["name"], lead["question"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(lead)
-
-    return unique
+    """).strip()
 
 
 # ---------------------------------------------------------------------------
 # CLI command handlers
 # ---------------------------------------------------------------------------
 
-def cmd_add_referral(args: argparse.Namespace) -> None:
-    bot = ReferralBot(args.db)
-    referral_id = bot.add_referral(
-        Referral(args.source, args.name, args.email, args.question, args.tags),
-        owner=args.owner,
-    )
-    referral = bot.get_referral(referral_id)
-    print(f"Created referral #{referral_id} with code {referral['ref_code']}")
-    print("\n--- Suggested referral intro ---")
-    print(draft_partner_intro(referral))
-    if args.notify_partner:
-        send_email(
-            PARTNER_EMAIL,
-            f"New Insurance Lead: {referral['name']} ({referral['ref_code']})",
-            draft_partner_intro(referral),
-        )
-        print(f"Lead emailed to {PARTNER_EMAIL}.")
-
-
-# Backward-compatible alias command handler
-def cmd_add(args: argparse.Namespace) -> None:
-    if not getattr(args, "notify_partner", False) and getattr(args, "notify_kia", False):
-        args.notify_partner = True
-    cmd_add_referral(args)
-
-
-def cmd_bulk_import(args: argparse.Namespace) -> None:
-    bot = ReferralBot(args.db)
-    created = 0
-    with open(args.csv_file, newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        required = {"source", "name", "email", "question", "tags"}
-        if not required.issubset(set(reader.fieldnames or [])):
-            missing = required - set(reader.fieldnames or [])
-            raise SystemExit(f"CSV missing columns: {', '.join(sorted(missing))}")
-        for row in reader:
-            bot.add_referral(
-                Referral(
-                    row["source"], row["name"], row["email"],
-                    row["question"], row.get("tags", ""),
-                ),
-                owner=args.owner,
-            )
-            created += 1
-    print(f"Imported {created} referrals from {args.csv_file}")
-
-
 def cmd_scrape_web(args: argparse.Namespace) -> None:
-    """Scrape Reddit for auto/home insurance leads and send them to Kia."""
-    print(f"Scraping Reddit for auto/home insurance leads (last {args.days} days)…")
+    print(f"Scraping Reddit for insurance leads (last {args.days} days)...")
+    reddit_leads = scrape_reddit_leads(limit=args.limit, days=args.days)
+    print(f"  Reddit: {len(reddit_leads)} qualifying posts found.")
 
-    keywords = args.keywords.split(",") if args.keywords else None
-    subreddits = args.subreddits.split(",") if args.subreddits else None
+    print("Scraping Craigslist for insurance leads...")
+    cl_leads = scrape_craigslist_leads()
+    print(f"  Craigslist: {len(cl_leads)} qualifying posts found.")
 
-    raw_leads = scrape_reddit_leads(
-        keywords=keywords,
-        subreddits=subreddits,
-        limit=args.limit,
-        days=args.days,
-    )
-
-    if not raw_leads:
-        print("No new leads found.")
-        return
-
+    all_raw = reddit_leads + cl_leads
     bot = ReferralBot(args.db)
-    new_count = 0
-    skipped_count = 0
-    new_referrals: list[dict] = []
 
-    for lead_data in raw_leads:
-        # Skip duplicates already in the database
+    new_count     = 0
+    skipped_count = 0
+
+    for lead_data in all_raw:
         if bot.referral_exists(lead_data["name"], lead_data["question"]):
             skipped_count += 1
             continue
 
-        referral_id = bot.add_referral(
+        rid = bot.add_referral(
             Referral(
                 source=lead_data["source"],
                 name=lead_data["name"],
                 email=lead_data["email"],
                 question=lead_data["question"],
+                body=lead_data.get("body", ""),
                 tags=lead_data["tags"],
             ),
             owner=args.owner,
             post_url=lead_data.get("url", ""),
         )
-        # Persist post_url into db
         with bot._connect() as conn:
             conn.execute(
-                "UPDATE leads SET post_url=? WHERE id=?",
-                (lead_data.get("url", ""), referral_id),
+                "UPDATE leads SET post_url=?, body=? WHERE id=?",
+                (lead_data.get("url", ""), lead_data.get("body", ""), rid),
             )
-
-        referral = bot.get_referral(referral_id)
-        referral["post_url"] = lead_data.get("url", "")
-        new_referrals.append(referral)
         new_count += 1
 
-    print(f"Found {len(raw_leads)} leads → {new_count} new, {skipped_count} already known.")
+    print(
+        f"\nSaved {new_count} new leads "
+        f"({skipped_count} duplicates skipped)."
+    )
 
-    if not new_referrals:
+    unnotified_count = bot.count_unnotified()
+    needed = max(0, BATCH_THRESHOLD - unnotified_count)
+    print(f"Leads waiting to send to Kia: {unnotified_count} / {BATCH_THRESHOLD}")
+
+    if unnotified_count < BATCH_THRESHOLD and not args.force_send:
+        print(
+            f"Need {needed} more lead(s) before sending batch email."
+            f" Run again to keep collecting."
+        )
         return
 
-    # ---- Email each lead individually to Kia --------------------------------
-    if args.notify_partner:
-        errors = 0
-        for referral in new_referrals:
-            try:
-                send_email(
-                    PARTNER_EMAIL,
-                    f"New Insurance Lead: {referral['name']} ({referral['ref_code']}) "
-                    f"[{referral.get('tags', '')}]",
-                    draft_partner_intro(referral),
-                )
-                print(f"  ✓ Emailed lead {referral['ref_code']} ({referral['name']}) to {PARTNER_EMAIL}")
-            except Exception as exc:
-                print(f"  ✗ Failed to email {referral['ref_code']}: {exc}")
-                errors += 1
-        if errors == 0:
-            print(f"All {new_count} leads emailed to {PARTNER_EMAIL}.")
-        else:
-            print(f"{new_count - errors}/{new_count} leads emailed. {errors} failed.")
-    else:
-        # Print to stdout so operator can review
-        print("\n--- New leads (not emailed; use --notify-partner to send) ---")
-        for referral in new_referrals:
-            print(f"\n{draft_partner_intro(referral)}")
-            print("-" * 60)
+    unnotified = bot.get_unnotified_referrals()
+    if not args.notify_partner:
+        print("\n-- Leads queued (--no-notify-partner set, not emailing) --")
+        for ref in unnotified:
+            print(f"\n  [{ref['ref_code']}] {ref['name']} | {ref['source']}")
+            print(f"    Post : {ref['question']}")
+            if ref.get("body"):
+                print(f"    Body : {ref['body'][:200]}")
+            print(f"    Link : {ref.get('post_url', 'N/A')}")
+        return
+
+    digest  = format_batch_digest(unnotified)
+    subject = (
+        f"{len(unnotified)} New Insurance Leads -- "
+        f"{dt.datetime.utcnow().strftime('%b %d, %Y')}"
+    )
+    try:
+        send_email(PARTNER_EMAIL, subject, digest)
+        bot.mark_notified([r["id"] for r in unnotified])
+        print(
+            f"\nSUCCESS: Batch of {len(unnotified)} leads emailed to {PARTNER_EMAIL}."
+        )
+    except Exception as exc:
+        print(f"\nERROR sending email: {exc}")
 
 
 def cmd_mark_partner_closed(args: argparse.Namespace) -> None:
@@ -648,44 +703,27 @@ def cmd_mark_partner_closed(args: argparse.Namespace) -> None:
     if not bot.mark_partner_closed(args.ref_code, args.sale_amount, args.finders_fee_amount):
         raise SystemExit(f"No referral found for {args.ref_code}")
     referral = bot.get_referral_by_code(args.ref_code)
-    invoice = finder_fee_invoice_text(referral, finder_fee_amount=args.finders_fee_amount)
+    invoice  = finder_fee_invoice_text(referral, args.finders_fee_amount)
     print(invoice)
     if args.send_invoice:
         send_email(PARTNER_EMAIL, f"Finder's Fee Invoice: {args.ref_code}", invoice)
         print(f"Invoice emailed to {PARTNER_EMAIL}.")
 
 
-# Backward-compatible alias
-def cmd_mark_sold(args: argparse.Namespace) -> None:
-    if not hasattr(args, "finders_fee_amount"):
-        args.finders_fee_amount = getattr(args, "invoice_amount", DEFAULT_FEE_AMOUNT)
-    cmd_mark_partner_closed(args)
-
-
-def cmd_mark_finders_fee_paid(args: argparse.Namespace) -> None:
+def cmd_mark_finder_fee_paid(args: argparse.Namespace) -> None:
     bot = ReferralBot(args.db)
     if not bot.mark_finder_fee_paid(args.ref_code, args.paid_amount):
         raise SystemExit(f"No referral found for {args.ref_code}")
     print(f"Marked {args.ref_code} as FINDER'S FEE PAID (${args.paid_amount:.2f}).")
 
 
-# Backward-compatible alias
-def cmd_mark_paid(args: argparse.Namespace) -> None:
-    cmd_mark_finders_fee_paid(args)
-
-
 def cmd_referral_summary(args: argparse.Namespace) -> None:
-    bot = ReferralBot(args.db)
+    bot    = ReferralBot(args.db)
     report = bot.referral_summary(days=args.days)
     print(report)
     if args.email:
         send_email(args.to, f"Referral Summary ({args.days}-day window)", report)
-        print(f"Referral summary email sent to {args.to}.")
-
-
-# Backward-compatible alias
-def cmd_summary(args: argparse.Namespace) -> None:
-    cmd_referral_summary(args)
+        print(f"Summary emailed to {args.to}.")
 
 
 # ---------------------------------------------------------------------------
@@ -694,123 +732,54 @@ def cmd_summary(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Referral / finder's-fee tracker — scrapes web leads and tracks contracts."
+        description="Insurance lead scraper and finder's-fee tracker."
     )
-    parser.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    parser.add_argument("--db", default=DB_PATH)
     sub = parser.add_subparsers(required=True)
 
-    # ---- web-scrape --------------------------------------------------------
-    scrape = sub.add_parser(
-        "web-scrape",
-        help="Scrape Reddit for auto/home insurance leads and send to Kia",
-    )
-    scrape.add_argument("--days", type=int, default=30,
-                        help="Look back this many days (default 30)")
-    scrape.add_argument("--limit", type=int, default=25,
-                        help="Max Reddit posts per keyword/subreddit (default 25)")
-    scrape.add_argument("--keywords", default="",
-                        help="Comma-separated keywords (default: built-in list)")
-    scrape.add_argument("--subreddits", default="",
-                        help="Comma-separated subreddits (default: built-in list)")
-    scrape.add_argument("--owner", default=DEFAULT_REF_OWNER,
-                        help="Referral code owner prefix")
-    scrape.add_argument(
-        "--notify-partner", action="store_true", default=True,
-        help="Email each lead to Kia at kiaconwell@gmail.com (default: on)",
-    )
-    scrape.add_argument(
-        "--no-notify-partner", dest="notify_partner", action="store_false",
-        help="Print leads to stdout instead of emailing",
-    )
+    # web-scrape
+    scrape = sub.add_parser("web-scrape", help="Scrape Reddit + Craigslist for leads")
+    scrape.add_argument("--days",       type=int, default=30)
+    scrape.add_argument("--limit",      type=int, default=25)
+    scrape.add_argument("--owner",      default=DEFAULT_REF_OWNER)
+    scrape.add_argument("--force-send", action="store_true",
+                        help="Send batch email even if fewer than 50 leads are queued")
+    scrape.add_argument("--notify-partner",    action="store_true", default=True)
+    scrape.add_argument("--no-notify-partner", dest="notify_partner", action="store_false")
     scrape.set_defaults(func=cmd_scrape_web)
 
-    # ---- add-referral ------------------------------------------------------
-    add = sub.add_parser("add-referral", help="Manually add a referred prospect")
-    add.add_argument("--source", required=True,
-                     help="Referral source (FB groups, Reddit, warm DM, etc.)")
-    add.add_argument("--name", required=True)
-    add.add_argument("--email", required=True)
-    add.add_argument("--question", required=True)
-    add.add_argument("--tags", default="")
-    add.add_argument("--owner", default=DEFAULT_REF_OWNER)
-    add.add_argument("--notify-partner", action="store_true",
-                     help="Email referral details to Kia")
-    add.set_defaults(func=cmd_add_referral)
-
-    add_old = sub.add_parser("add", help="(legacy) Add referral")
-    add_old.add_argument("--source", required=True)
-    add_old.add_argument("--name", required=True)
-    add_old.add_argument("--email", required=True)
-    add_old.add_argument("--question", required=True)
-    add_old.add_argument("--tags", default="")
-    add_old.add_argument("--owner", default=DEFAULT_REF_OWNER)
-    add_old.add_argument("--notify-kia", action="store_true")
-    add_old.set_defaults(func=cmd_add, notify_partner=False)
-
-    # ---- bulk-import -------------------------------------------------------
-    bulk = sub.add_parser("bulk-import", help="Import referrals from CSV")
-    bulk.add_argument("--csv-file", required=True)
-    bulk.add_argument("--owner", default=DEFAULT_REF_OWNER)
-    bulk.set_defaults(func=cmd_bulk_import)
-
-    # ---- mark-partner-closed -----------------------------------------------
-    closed = sub.add_parser(
-        "mark-partner-closed",
-        help="Mark customer closed by partner (they signed an insurance contract)",
-    )
-    closed.add_argument("--ref-code", required=True)
-    closed.add_argument("--sale-amount", type=float, required=True,
-                        help="Partner-reported sale / contract amount")
-    closed.add_argument("--finders-fee-amount", type=float, default=DEFAULT_FEE_AMOUNT)
-    closed.add_argument("--send-invoice", action="store_true")
+    # mark-partner-closed
+    closed = sub.add_parser("mark-partner-closed")
+    closed.add_argument("--ref-code",           required=True)
+    closed.add_argument("--sale-amount",         type=float, required=True)
+    closed.add_argument("--finders-fee-amount",  type=float, default=DEFAULT_FEE_AMOUNT)
+    closed.add_argument("--send-invoice",        action="store_true")
     closed.set_defaults(func=cmd_mark_partner_closed)
 
-    sold_old = sub.add_parser("mark-sold", help="(legacy) Mark partner closed")
-    sold_old.add_argument("--ref-code", required=True)
-    sold_old.add_argument("--sale-amount", type=float, required=True)
-    sold_old.add_argument("--invoice-amount", type=float, default=DEFAULT_FEE_AMOUNT)
-    sold_old.add_argument("--send-invoice", action="store_true")
-    sold_old.set_defaults(func=cmd_mark_sold)
-
-    # ---- mark-finders-fee-paid ---------------------------------------------
-    paid = sub.add_parser("mark-finders-fee-paid", help="Mark finder's fee paid")
-    paid.add_argument("--ref-code", required=True)
+    # mark-finders-fee-paid
+    paid = sub.add_parser("mark-finders-fee-paid")
+    paid.add_argument("--ref-code",   required=True)
     paid.add_argument("--paid-amount", type=float, default=DEFAULT_FEE_AMOUNT)
-    paid.set_defaults(func=cmd_mark_finders_fee_paid)
+    paid.set_defaults(func=cmd_mark_finder_fee_paid)
 
-    paid_old = sub.add_parser("mark-paid", help="(legacy) Mark finder's fee paid")
-    paid_old.add_argument("--ref-code", required=True)
-    paid_old.add_argument("--paid-amount", type=float, default=DEFAULT_FEE_AMOUNT)
-    paid_old.set_defaults(func=cmd_mark_paid)
-
-    # ---- summaries ---------------------------------------------------------
-    summary = sub.add_parser("referral-summary", help="Generate referral summary")
-    summary.add_argument("--days", type=int, default=7)
-    summary.add_argument("--email", action="store_true",
-                         help="Email summary to report recipient")
-    summary.add_argument("--to", default=DEFAULT_REPORT_TO)
-    summary.set_defaults(func=cmd_referral_summary)
-
-    weekly = sub.add_parser("weekly-summary", help="Generate weekly referral summary")
-    weekly.add_argument("--days", type=int, default=7)
-    weekly.add_argument("--email", action="store_true",
-                        help="Email summary to report recipient")
-    weekly.add_argument("--to", default=DEFAULT_REPORT_TO)
-    weekly.set_defaults(func=cmd_referral_summary)
-
-    daily = sub.add_parser("daily-summary", help="Generate daily referral summary")
-    daily.add_argument("--days", type=int, default=1)
-    daily.add_argument("--email", action="store_true",
-                       help="Email summary to report recipient")
-    daily.add_argument("--to", default=DEFAULT_REPORT_TO)
-    daily.set_defaults(func=cmd_referral_summary)
+    # summaries
+    for name, default_days in [
+        ("referral-summary", 7),
+        ("weekly-summary",   7),
+        ("daily-summary",    1),
+    ]:
+        s = sub.add_parser(name)
+        s.add_argument("--days",  type=int, default=default_days)
+        s.add_argument("--email", action="store_true")
+        s.add_argument("--to",    default=DEFAULT_REPORT_TO)
+        s.set_defaults(func=cmd_referral_summary)
 
     return parser
 
 
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args   = parser.parse_args()
     args.func(args)
 
 
