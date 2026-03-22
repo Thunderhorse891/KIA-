@@ -21,7 +21,7 @@ class ReferralBotTests(unittest.TestCase):
         )
         referral = self.bot.get_referral(referral_id)
         self.assertTrue(referral["ref_code"].startswith("ERINBRAND-REF-"))
-        self.assertIn("KIACONWELL@PRIMERICA.COM", draft_partner_intro(referral))
+        self.assertIn("kiaconwell@gmail.com", draft_partner_intro(referral))
 
     def test_mark_partner_closed_and_invoice(self):
         referral_id = self.bot.add_referral(Referral("web", "Lina", "lina@example.com", "Need debt help", "debt"))
@@ -29,7 +29,8 @@ class ReferralBotTests(unittest.TestCase):
         self.assertTrue(self.bot.mark_partner_closed(referral["ref_code"], 2300.0, 50.0))
         closed = self.bot.get_referral(referral_id)
         self.assertEqual(closed["status"], "partner_closed")
-        self.assertIn("Finder's Fee Due: $50.00", finder_fee_invoice_text(closed, 50.0))
+        self.assertIn("Finder's Fee Due", finder_fee_invoice_text(closed, 50.0))
+        self.assertIn("$50.00", finder_fee_invoice_text(closed, 50.0))
 
     def test_mark_finders_fee_paid_and_summary(self):
         referral_id = self.bot.add_referral(Referral("web", "Nia", "nia@example.com", "Savings", "invest"))

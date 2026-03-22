@@ -1,71 +1,77 @@
-# Referral Finder's-Fee Tracker (Partner Customer Tracking)
+# Insurance Referral Lead Bot (KIA-)
 
-**Source-of-truth product framing:**
-> This bot tracks referral customers I send to my friend, records when they become his customer, and tracks whether I received my finder’s fee.
+Tracks insurance leads sent to Kia Conwell, records when they sign contracts,
+and tracks finder's fees owed to you.
 
-## What this bot tracks
-This is **not** your personal sales CRM.
-This is a **referral / finder’s-fee tracker** for prospects you send to your friend (partner).
+---
 
-Workflow:
-1. You refer a prospect to your friend.
-2. Bot stores source + referral code.
-3. Your friend confirms whether they became his customer.
-4. Bot records partner-closed event.
-5. Bot tracks expected finder’s fee and whether paid/unpaid.
-6. Bot sends weekly referral summaries to you.
+## How it works
 
-## Default business assumptions in this repo
-- Channels: Facebook groups, Reddit, referrals, web form, warm DMs.
-- Data entry: Erin only (for now).
-- `mark-partner-closed` timing: when friend confirms they became his customer.
-- `mark-finders-fee-paid` timing: when your finder’s fee is actually received.
-- Payment methods: Zelle, Cash App, PayPal.
-- Invoice terms: Net 7.
-- Follow-up schedule:
-  - Day 1 invoice
-  - Day 7 reminder
-  - Day 14 reminder
-  - Day 21 final reminder
-- Runtime now: laptop.
-- Future runtime: VPS/server.
+1. **Scrape** — Bot searches Reddit for people actively asking about auto / home
+   insurance and saves them as leads.
+2. **Email** — Each new lead is emailed to `kiaconwell@gmail.com` so Kia can
+   follow up directly.
+3. **Track** — When Kia signs a contract with a referred lead you record it.
+4. **Invoice** — Bot generates a finder's fee invoice and emails it to Kia.
+5. **Summarize** — Weekly report emailed to you so you can see what's pending.
 
-## Outlook SMTP configuration (recommended)
-Use Outlook SMTP values:
+---
+
+## Quick start
+
+### 1. Set SMTP credentials (required for all email features)
 
 ```bash
 export SMTP_HOST="smtp.office365.com"
 export SMTP_PORT="587"
 export SMTP_USER="Erin067841@outlook.com"
-export SMTP_PASS="OUTLOOK_APP_PASSWORD"
+export SMTP_PASS="YOUR_OUTLOOK_APP_PASSWORD"
 export SMTP_FROM="Erin067841@outlook.com"
 export LEADBOT_REPORT_TO="Erin067841@outlook.com"
 ```
 
-**Important:** `SMTP_PASS` must be an Outlook **app password**, not your normal Outlook login password.
+> `SMTP_PASS` must be an Outlook **app password** (not your regular login password).
+> Create one at account.microsoft.com → Security → App passwords.
 
-## CLI commands
+### 2. Scrape Reddit and email leads to Kia (main workflow)
 
-### 1) Add a referred prospect
+```bash
+python3 lead_bot.py web-scrape
+```
+
+This searches Reddit subreddits (`r/insurance`, `r/personalfinance`,
+`r/homeowners`, etc.) for people asking about auto/home insurance,
+saves them to the database, and emails each one to `kiaconwell@gmail.com`.
+
+**Options:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--days N` | 30 | Look back N days |
+| `--limit N` | 25 | Max posts per keyword/subreddit |
+| `--no-notify-partner` | off | Print leads instead of emailing |
+| `--keywords a,b` | built-in | Comma-separated search terms |
+| `--subreddits a,b` | built-in | Comma-separated subreddits |
+
+Preview without emailing:
+```bash
+python3 lead_bot.py web-scrape --no-notify-partner
+```
+
+### 3. Add a lead manually
+
 ```bash
 python3 lead_bot.py add-referral \
-  --source "facebook:group:atlanta-finance" \
-  --name "Prospect Name" \
-  --email "prospect@example.com" \
-  --question "Need life insurance options" \
-  --tags "term-life" \
-  --owner "ERIN" \
+  --source "facebook:group:home-insurance" \
+  --name "Jane Smith" \
+  --email "jane@example.com" \
+  --question "Looking for homeowners insurance quote in Georgia" \
+  --tags "home-insurance" \
   --notify-partner
 ```
 
-### 2) Bulk import referred prospects
-CSV columns required: `source,name,email,question,tags`
+### 4. Record that Kia signed a contract (closed the lead)
 
-```bash
-python3 lead_bot.py bulk-import --csv-file referrals.csv --owner ERIN
-```
-
-### 3) Mark customer closed by partner
 ```bash
 python3 lead_bot.py mark-partner-closed \
   --ref-code ERIN-REF-000001 \
@@ -74,34 +80,63 @@ python3 lead_bot.py mark-partner-closed \
   --send-invoice
 ```
 
-### 4) Mark finder’s fee paid
+### 5. Record that you received your finder's fee
+
 ```bash
 python3 lead_bot.py mark-finders-fee-paid --ref-code ERIN-REF-000001 --paid-amount 50
 ```
 
-### 5) Run weekly referral summary
-```bash
-python3 lead_bot.py weekly-summary --days 7
-```
+### 6. Email yourself a weekly summary
 
-### 6) Email weekly referral summary to yourself
 ```bash
 python3 lead_bot.py weekly-summary --days 7 --email --to Erin067841@outlook.com
 ```
 
-## Fully automated weekly summary to yourself
-Run every Monday at 8:00 AM:
+---
+
+## Automate with cron
+
+Run the scraper every morning at 7 AM and email leads to Kia automatically:
 
 ```bash
-0 8 * * 1 cd /workspace/KIA- && /usr/bin/python3 lead_bot.py --db leadbot.db weekly-summary --days 7 --email --to Erin067841@outlook.com
+# Scrape and email leads to Kia every day at 7:00 AM
+0 7 * * * cd /workspace/KIA- && /usr/bin/python3 lead_bot.py web-scrape
+
+# Email yourself a weekly summary every Monday at 8:00 AM
+0 8 * * 1 cd /workspace/KIA- && /usr/bin/python3 lead_bot.py weekly-summary --days 7 --email --to Erin067841@outlook.com
 ```
 
-## Backward compatibility
-Legacy commands still work (`add`, `mark-sold`, `mark-paid`) but are now labeled as legacy aliases.
+---
 
-## Partner contact destination
-- Partner Email: `KIACONWELL@PRIMERICA.COM`
-- Partner Website: `https://livemore.net/o/kia_conwell`
+## Partner contact
+
+- **Name:** Kia Conwell
+- **Email:** kiaconwell@gmail.com
+- **Website:** https://livemore.net/o/kia_conwell
+- **Products:** Auto insurance, home/homeowners insurance, bundled discounts
+
+---
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LEADBOT_DB` | `leadbot.db` | SQLite database path |
+| `LEADBOT_REF_OWNER` | `ERIN` | Prefix for referral codes |
+| `LEADBOT_REPORT_TO` | `Erin067841@outlook.com` | Where weekly summary is sent |
+| `LEADBOT_DEFAULT_FEE` | `50` | Default finder's fee ($) |
+| `PARTNER_EMAIL` | `kiaconwell@gmail.com` | Partner email for leads / invoices |
+| `SMTP_HOST` | required | SMTP server (e.g. smtp.office365.com) |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | required | Your email address |
+| `SMTP_PASS` | required | App password |
+| `SMTP_FROM` | `SMTP_USER` | From address |
+
+---
 
 ## Compliance note
-Use only platform-approved outreach and opt-in referrals. This tool does not perform blind spam posting.
+
+The scraper reads **publicly posted** Reddit threads. It does not send
+unsolicited emails to prospects — it alerts Kia so she can reach out through
+the platform where the person already posted. Use only opt-in and
+platform-approved follow-up methods.
