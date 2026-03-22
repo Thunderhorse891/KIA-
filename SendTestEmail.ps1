@@ -2,8 +2,8 @@
 # Sends a test email to kiaconwell@gmail.com from Erin's Outlook account
 # Save this anywhere on your computer and double-click to run
 
-$From     = "Erin067841@outlook.com"
-$AppPass  = "deimrxfbcklqujhg"
+$From     = "erinswyrick85@gmail.com"
+$AppPass  = "YOUR_GMAIL_APP_PASSWORD_HERE"
 $To       = "kiaconwell@gmail.com"
 $Subject  = "Test - Lead Bot Email Working!"
 $Body     = @"
@@ -22,7 +22,7 @@ Write-Host ""
 Write-Host "Sending test email to $To ..." -ForegroundColor Cyan
 
 try {
-    $smtp = New-Object Net.Mail.SmtpClient("smtp-mail.outlook.com", 587)
+    $smtp = New-Object Net.Mail.SmtpClient("smtp.gmail.com", 587)
     $smtp.EnableSsl   = $true
     $smtp.Credentials = New-Object Net.NetworkCredential($From, $AppPass)
 
