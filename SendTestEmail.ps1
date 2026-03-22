@@ -1,96 +1,48 @@
 # SendTestEmail.ps1
-# Loads SMTP credentials from .env and sends a test email to kiaconwell@gmail.com
+# Sends a test email to kiaconwell@gmail.com from Erin's Outlook account
+# Save this anywhere on your computer and double-click to run
 
-$ErrorActionPreference = "Stop"
+$From     = "Erin067841@outlook.com"
+$AppPass  = "deimrxfbcklqujhg"
+$To       = "kiaconwell@gmail.com"
+$Subject  = "Test - Lead Bot Email Working!"
+$Body     = @"
+Hi Kia,
 
-Write-Host ""
-Write-Host "=== KIA Lead Bot - Test Email Sender ===" -ForegroundColor Cyan
-Write-Host ""
+This is a test email from Erin's Lead Bot.
 
-# ── 1. Find the .env file ────────────────────────────────────────────────────
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$envFile = Join-Path $scriptDir ".env"
+If you are reading this, the email system is set up and working correctly!
 
-if (-not (Test-Path $envFile)) {
-    Write-Host "ERROR: .env file not found at: $envFile" -ForegroundColor Red
-    Write-Host "Make sure .env exists in the same folder as this script." -ForegroundColor Yellow
-    exit 1
-}
+Going forward you will automatically receive new insurance leads at this email address.
 
-# ── 2. Load .env into environment variables ──────────────────────────────────
-Write-Host "Loading credentials from .env..." -ForegroundColor Gray
-Get-Content $envFile | ForEach-Object {
-    $line = $_.Trim()
-    if ($line -and -not $line.StartsWith("#")) {
-        $parts = $line -split "=", 2
-        if ($parts.Count -eq 2) {
-            $key   = $parts[0].Trim()
-            $value = $parts[1].Trim()
-            [System.Environment]::SetEnvironmentVariable($key, $value, "Process")
-        }
-    }
-}
-Write-Host "  SMTP_HOST : $env:SMTP_HOST" -ForegroundColor Gray
-Write-Host "  SMTP_USER : $env:SMTP_USER" -ForegroundColor Gray
-Write-Host "  SMTP_PASS : $('*' * $env:SMTP_PASS.Length)" -ForegroundColor Gray
-Write-Host ""
-
-# ── 3. Check Python is available ─────────────────────────────────────────────
-$python = $null
-foreach ($cmd in @("python", "python3")) {
-    try {
-        $ver = & $cmd --version 2>&1
-        if ($ver -match "Python") {
-            $python = $cmd
-            Write-Host "Python found: $ver" -ForegroundColor Green
-            break
-        }
-    } catch { }
-}
-
-if (-not $python) {
-    Write-Host "ERROR: Python not found. Please install Python 3 and try again." -ForegroundColor Red
-    exit 1
-}
-
-# ── 4. Build the test referral command ───────────────────────────────────────
-$leadBotScript = Join-Path $scriptDir "lead_bot.py"
-
-if (-not (Test-Path $leadBotScript)) {
-    Write-Host "ERROR: lead_bot.py not found at: $leadBotScript" -ForegroundColor Red
-    exit 1
-}
+- Erin
+"@
 
 Write-Host ""
-Write-Host "Sending test email to kiaconwell@gmail.com..." -ForegroundColor Cyan
+Write-Host "Sending test email to $To ..." -ForegroundColor Cyan
 
-$args = @(
-    $leadBotScript,
-    "add-referral",
-    "--source",   "TEST",
-    "--name",     "Test Lead",
-    "--email",    "test@example.com",
-    "--question", "This is a test referral email from Erin's Lead Bot. If you received this, everything is working!",
-    "--tags",     "test",
-    "--notify-partner"
-)
-
-# ── 5. Run lead_bot.py ───────────────────────────────────────────────────────
 try {
-    & $python @args
-    $exitCode = $LASTEXITCODE
-} catch {
+    $smtp = New-Object Net.Mail.SmtpClient("smtp-mail.outlook.com", 587)
+    $smtp.EnableSsl   = $true
+    $smtp.Credentials = New-Object Net.NetworkCredential($From, $AppPass)
+
+    $msg            = New-Object Net.Mail.MailMessage
+    $msg.From       = $From
+    $msg.To.Add($To)
+    $msg.Subject    = $Subject
+    $msg.Body       = $Body
+
+    $smtp.Send($msg)
+
     Write-Host ""
-    Write-Host "ERROR running lead_bot.py: $_" -ForegroundColor Red
-    exit 1
+    Write-Host "SUCCESS! Email sent to $To" -ForegroundColor Green
+    Write-Host "Tell Kia to check her Gmail inbox (and spam just in case)." -ForegroundColor Yellow
+}
+catch {
+    Write-Host ""
+    Write-Host "FAILED: $_" -ForegroundColor Red
 }
 
 Write-Host ""
-if ($exitCode -eq 0) {
-    Write-Host "SUCCESS! Test email sent to kiaconwell@gmail.com" -ForegroundColor Green
-    Write-Host "Tell Kia to check her Gmail inbox (and spam folder just in case)." -ForegroundColor Yellow
-} else {
-    Write-Host "FAILED. Exit code: $exitCode" -ForegroundColor Red
-    Write-Host "Double-check your app password in the .env file." -ForegroundColor Yellow
-}
-Write-Host ""
+Write-Host "Press Enter to close..."
+Read-Host
